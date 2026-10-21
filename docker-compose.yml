@@ -1,0 +1,21 @@
+# Только PostgreSQL для разработки и небольших серверов:  docker compose up -d
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: foreman
+      POSTGRES_PASSWORD: foreman   # поменяйте на сервере и обновите DATABASE_URL
+      POSTGRES_DB: foreman
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foreman"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
