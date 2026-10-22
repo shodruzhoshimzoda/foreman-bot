@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import StateFilter
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from config import Config
-from db import ACTIVE, Database
-from filters import IsChief
-from keyboards import (
+from bot.config import Config
+from bot.db import ACTIVE, Database
+from bot.filters import IsChief
+from bot.keyboards import (
+    dashboard_kb,
     BTN_ACTIVE,
     BTN_NEW,
     BTN_STATS,
@@ -29,9 +31,10 @@ from keyboards import (
     task_list_kb,
     team_kb,
 )
-from notify import drop_keyboard, safe_edit, safe_send, send_task
-from states import NewTask
-from texts import (
+from bot.notify import drop_keyboard, safe_edit, safe_send, send_task
+from bot.states import NewTask
+from bot.texts import (
+    album_summary,
     KIND_LABEL,
     PERIOD_LABEL,
     PRIORITY_LABEL,
@@ -45,28 +48,33 @@ from texts import (
     task_line,
     total_block,
 )
-from utils import fmt_local
+from bot.utils import fmt_local
 
 router = Router()
 router.message.filter(IsChief())
 router.callback_query.filter(IsChief())
 
 MAX_TEXT = 3000
+ALBUM_KINDS = ("photo", "video")   # эти вложения можно присылать несколькими штуками
+MAX_ALBUM = 10                     # лимит Telegram на один альбом
 
 
 def extract_content(message: Message):
-    """Что прислал шеф: (вид, file_id, текст) или None, если такой тип не поддерживается."""
+    """Что прислал шеф: (вид, file_id, текст, превью, длительность) или None, если тип не поддерживается."""
     text = (message.text or message.caption or "").strip()
     if message.photo:
-        return "photo", message.photo[-1].file_id, text
+        # размеры идут по возрастанию: [2] ≈ 800px — для карточки в дашборде, [-1] — оригинал (до 1280px)
+        sizes = message.photo
+        thumb = sizes[min(2, len(sizes) - 1)]
+        return "photo", sizes[-1].file_id, text, thumb.file_id, None
     if message.voice:
-        return "voice", message.voice.file_id, text
+        return "voice", message.voice.file_id, text, None, message.voice.duration
     if message.video:
-        return "video", message.video.file_id, text
+        return "video", message.video.file_id, text, None, message.video.duration
     if message.document:
-        return "document", message.document.file_id, text
+        return "document", message.document.file_id, text, None, None
     if message.text:
-        return "text", None, text
+        return "text", None, text, None, None
     return None
 
 
@@ -93,24 +101,65 @@ async def new_task(message: Message, state: FSMContext, db: Database):
     )
 
 
+def _item(kind: str, file_id: str, thumb_id: str | None, duration: int | None, mid: int) -> dict:
+    return {"kind": kind, "file_id": file_id, "thumb_id": thumb_id, "duration": duration, "mid": mid}
+
+
+def _prompt_text(kind: str, items: list) -> str:
+    """Подсказка шагу «важность»: для фото/видео показывает, сколько вложений уже принято."""
+    if kind not in ALBUM_KINDS:
+        return f"{KIND_LABEL[kind]} принято. Выберите <b>важность</b>:"
+    head = f"{KIND_LABEL[kind]} принято." if len(items) <= 1 else f"Принято — {album_summary(items)}"
+    more = "\n<i>Можно добавить ещё — просто отправьте их.</i>" if len(items) < MAX_ALBUM else ""
+    return f"{head}{more}\nВыберите <b>важность</b>:"
+
+
 @router.message(NewTask.content, ~F.text.in_(MENU_BUTTONS))
 async def nt_content(message: Message, state: FSMContext):
     data = extract_content(message)
     if data is None:
         return await message.answer("Этот тип сообщения не поддерживается. Отправьте текст, фото или голосовое.")
-    kind, file_id, text = data
+    kind, file_id, text, thumb_id, duration = data
     if len(text) > MAX_TEXT:
         return await message.answer(f"Слишком длинный текст (максимум {MAX_TEXT} символов). Сократите его.")
-    await state.update_data(kind=kind, file_id=file_id, text=text, group=message.media_group_id)
+    items = [_item(kind, file_id, thumb_id, duration, message.message_id)] if kind in ALBUM_KINDS else []
+    await state.update_data(
+        kind=kind, file_id=file_id, text=text, thumb_id=thumb_id, duration=duration,
+        items=items, group=message.media_group_id,
+    )
     await state.set_state(NewTask.priority)
-    await message.answer(f"{KIND_LABEL[kind]} принято. Выберите <b>важность</b>:", reply_markup=priority_kb())
+    sent = await message.answer(_prompt_text(kind, items), reply_markup=priority_kb())
+    await state.update_data(prompt_id=sent.message_id)
 
 
 @router.message(StateFilter(NewTask.priority, NewTask.foremen), ~F.text.in_(MENU_BUTTONS))
 async def nt_stray(message: Message, state: FSMContext):
+    """Ещё фото/видео после первого: дописываем в ту же задачу (альбом или пересылка по одному)."""
     data = await state.get_data()
-    # остальные фото альбома молча игнорируем — берётся первое
-    if message.media_group_id and message.media_group_id == data.get("group"):
+    items = data.get("items") or []
+    extra = extract_content(message)
+    on_priority = await state.get_state() == NewTask.priority.state
+    same_album = bool(message.media_group_id) and message.media_group_id == data.get("group")
+
+    if items and extra and extra[0] in ALBUM_KINDS and (on_priority or same_album):
+        if len(items) < MAX_ALBUM:
+            kind, file_id, text, thumb_id, duration = extra
+            items = sorted([*items, _item(kind, file_id, thumb_id, duration, message.message_id)], key=lambda i: i["mid"])
+            first = items[0]  # поля задачи описывают первое вложение (для превью и старых запросов)
+            await state.update_data(
+                items=items, kind=first["kind"], file_id=first["file_id"], thumb_id=first["thumb_id"],
+                duration=first["duration"], text=data.get("text") or text[:MAX_TEXT],
+            )
+            if on_priority and data.get("prompt_id"):
+                try:  # обновляем счётчик в одном и том же сообщении, а не отвечаем на каждое фото
+                    await message.bot.edit_message_text(
+                        _prompt_text(first["kind"], items), chat_id=message.chat.id,
+                        message_id=data["prompt_id"], reply_markup=priority_kb(),
+                    )
+                except TelegramBadRequest:
+                    pass
+        return
+    if same_album:  # хвост альбома, который уже не принимаем (например, голосовое в альбоме) — без шума
         return
     await message.answer("Задача уже принята. Нажмите кнопку выше или /cancel, чтобы начать заново.")
 
@@ -125,7 +174,8 @@ async def nt_priority(cb: CallbackQuery, state: FSMContext, db: Database):
         await state.clear()
         await safe_edit(cb.message, "Нет активных прорабов.")
         return await cb.answer()
-    await state.update_data(priority=code, selected=[])
+    pick = [{"tg_id": f["tg_id"], "full_name": f["full_name"]} for f in foremen]
+    await state.update_data(priority=code, selected=[], foremen=pick)
     await state.set_state(NewTask.foremen)
     await safe_edit(cb.message, f"Важность: {PRIORITY_LABEL[code]}")
     await cb.message.answer("Кому отправить?", reply_markup=foremen_pick_kb(foremen, set()))
@@ -133,14 +183,13 @@ async def nt_priority(cb: CallbackQuery, state: FSMContext, db: Database):
 
 
 @router.callback_query(NewTask.foremen, F.data.startswith("nt_f:"))
-async def nt_toggle(cb: CallbackQuery, state: FSMContext, db: Database):
+async def nt_toggle(cb: CallbackQuery, state: FSMContext):
     fid = int(cb.data.split(":")[1])
     data = await state.get_data()
     selected = set(data.get("selected", []))
     selected ^= {fid}
     await state.update_data(selected=list(selected))
-    foremen = await db.list_foremen(cb.from_user.id, "active")
-    await cb.message.edit_reply_markup(reply_markup=foremen_pick_kb(foremen, selected))
+    await cb.message.edit_reply_markup(reply_markup=foremen_pick_kb(data.get("foremen", []), selected))
     await cb.answer()
 
 
@@ -159,15 +208,27 @@ async def _deliver(cb: CallbackQuery, state: FSMContext, db: Database, bot: Bot,
     if not ids:
         return await cb.answer("Выберите хотя бы одного прораба", show_alert=True)
     await state.clear()
+    items = data.get("items") or []
+    media = [{k: v for k, v in i.items() if k != "mid"} for i in items] if len(items) > 1 else None
 
-    delivered, failed = [], []
-    for fid in ids:
-        tid = await db.create_task(chief_id, fid, data["kind"], data.get("file_id"), data.get("text", ""), data["priority"])
-        task = await db.get_task(tid)
-        ok = await send_task(bot, fid, task, foreman_header(task, new=True))
-        (delivered if ok else failed).append(esc(active[fid]["full_name"]))
+    # одна вставка на всех прорабов, затем рассылка параллельно (лимит Telegram — ~30 сообщений/с)
+    tasks = await db.create_tasks(
+        chief_id, ids, data["kind"], data.get("file_id"), data.get("text", ""), data["priority"],
+        thumb_id=data.get("thumb_id"), duration=data.get("duration"), media=media,
+    )
+    sem = asyncio.Semaphore(10)
+
+    async def _send(task) -> bool:
+        async with sem:
+            return await send_task(bot, task["foreman_id"], task, foreman_header(task, new=True))
+
+    results = await asyncio.gather(*(_send(t) for t in tasks))
+    delivered = [esc(t["foreman_name"]) for t, ok in zip(tasks, results) if ok]
+    failed = [esc(t["foreman_name"]) for t, ok in zip(tasks, results) if not ok]
 
     text = f"✅ <b>Задача отправлена</b> · {PRIORITY_LABEL[data['priority']]}"
+    if media:
+        text += f"\n{album_summary(items)}"
     if delivered:
         text += "\n👷 " + ", ".join(delivered)
     if failed:
@@ -250,33 +311,43 @@ async def ct_cancel(cb: CallbackQuery, db: Database):
 
 
 # =====================================================================
+# Дашборд (Telegram Mini App)
+# =====================================================================
+@router.message(Command("dashboard"))
+async def cmd_dashboard(message: Message, config: Config):
+    if not config.webapp_url:
+        return await message.answer("Дашборд не настроен: задайте WEBAPP_URL в .env.")
+    await message.answer("📊 Дашборд по участку:", reply_markup=dashboard_kb(config.webapp_url))
+
+
+# =====================================================================
 # Статистика
 # =====================================================================
-async def _render_stats(db: Database, chief_id: int, days: int):
+async def _render_stats(db: Database, config: Config, chief_id: int, days: int):
     rows = await db.stats(chief_id=chief_id, days=days or None)
     head = f"📊 <b>Статистика</b> — {PERIOD_LABEL[days]}\n"
     if not rows:
-        return head + "\nУ вас пока нет прорабов.", stats_kb([], days)
+        return head + "\nУ вас пока нет прорабов.", stats_kb([], days, config.webapp_url)
     body = "\n\n".join(stat_block(r) for r in rows) + "\n\n" + total_block(rows)
     text = head + "\n" + body
     if len(text) > 3900:
         text = text[:3850] + "\n…\nПолный отчёт — в экспорте CSV."
-    return text, stats_kb(rows, days)
+    return text, stats_kb(rows, days, config.webapp_url)
 
 
 @router.message(F.text == BTN_STATS)
-async def show_stats(message: Message, state: FSMContext, db: Database):
+async def show_stats(message: Message, state: FSMContext, db: Database, config: Config):
     await state.clear()
-    text, kb = await _render_stats(db, message.from_user.id, 7)
+    text, kb = await _render_stats(db, config, message.from_user.id, 7)
     await message.answer(text, reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("st:"))
-async def cb_stats(cb: CallbackQuery, db: Database):
+async def cb_stats(cb: CallbackQuery, db: Database, config: Config):
     days = int(cb.data.split(":")[1])
     if days not in PERIOD_LABEL:
         return await cb.answer()
-    text, kb = await _render_stats(db, cb.from_user.id, days)
+    text, kb = await _render_stats(db, config, cb.from_user.id, days)
     await safe_edit(cb.message, text, kb)
     await cb.answer()
 
@@ -288,11 +359,14 @@ async def cb_foreman_stats(cb: CallbackQuery, db: Database, config: Config):
     foreman = await db.get_user(fid)
     if not foreman or foreman["chief_id"] != cb.from_user.id:
         return await cb.answer("Прораб не найден", show_alert=True)
-    rows = await db.stats(foreman_id=fid, days=days or None)
-    prio = {r["priority"]: r["c"] for r in await db.priority_breakdown(fid, days or None)}
-    recent = await db.recent_tasks(fid, days or None, limit=10)
+    rows, recent = await asyncio.gather(
+        db.stats(foreman_id=fid, days=days or None),
+        db.recent_tasks(fid, days or None, limit=10),
+    )
+    row = rows[0]
+    prio = {"urgent": row["prio_urgent"], "high": row["prio_high"], "normal": row["prio_normal"]}
 
-    lines = [f"🔎 <b>{esc(foreman['full_name'])}</b> — {PERIOD_LABEL[days]}", "", stat_block(rows[0], with_name=False), ""]
+    lines = [f"🔎 <b>{esc(foreman['full_name'])}</b> — {PERIOD_LABEL[days]}", "", stat_block(row, with_name=False), ""]
     lines.append(
         "По важности: " + " · ".join(f"{PRIORITY_LABEL[p]}: {prio.get(p, 0)}" for p in ("urgent", "high", "normal"))
     )

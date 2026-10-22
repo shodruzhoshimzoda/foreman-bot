@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import html
 
-from utils import fmt_hours, fmt_local, fmt_short_date
+from bot.utils import fmt_hours, fmt_local, fmt_short_date
 
 STATUS_LABEL = {
     "new": "🔧 В работе",
@@ -34,6 +34,23 @@ def short_name(name: str, limit: int = 16) -> str:
     return name if len(name) <= limit else name[: limit - 1] + "…"
 
 
+def album_items(t) -> list:
+    """Вложения задачи-альбома (несколько фото/видео); для обычной задачи — пустой список."""
+    try:
+        media = t["media"]
+    except (KeyError, IndexError):
+        return []
+    return list(media) if media and len(media) > 1 else []
+
+
+def album_summary(items: list) -> str:
+    """«📷 Фото: 3 · 🎥 Видео: 1» — сколько чего в альбоме."""
+    photos = sum(1 for i in items if i["kind"] == "photo")
+    videos = len(items) - photos
+    parts = ([f"📷 Фото: {photos}"] if photos else []) + ([f"🎥 Видео: {videos}"] if videos else [])
+    return " · ".join(parts)
+
+
 def preview(t, limit: int = 40) -> str:
     """Короткое описание задачи для списков."""
     txt = " ".join((t["text"] or "").split())
@@ -42,6 +59,9 @@ def preview(t, limit: int = 40) -> str:
     if t["kind"] == "text":
         return txt or "(пусто)"
     label = KIND_LABEL.get(t["kind"], "📎 Файл")
+    n = len(album_items(t))
+    if n:
+        label += f" ×{n}"
     return f"{label}: {txt}" if txt else label
 
 

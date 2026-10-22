@@ -1,45 +1,37 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-# В базе все даты хранятся в UTC в формате SQLite: "YYYY-MM-DD HH:MM:SS"
-DB_FMT = "%Y-%m-%d %H:%M:%S"
+# В базе все даты — TIMESTAMPTZ (хранятся в UTC); в интерфейсе показываем в часовом поясе TZ.
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(timezone.utc)
 
 
-def to_db(dt: datetime) -> str:
-    """aware-datetime -> UTC строка; naive считается уже UTC."""
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt.strftime(DB_FMT)
+def since(days: int | None) -> datetime:
+    """Начало периода; None/0 — «всё время»."""
+    return utcnow() - timedelta(days=days) if days else EPOCH
 
 
-def now_str() -> str:
-    return to_db(utcnow())
+@lru_cache(maxsize=8)
+def _zone(tz_name: str) -> ZoneInfo:
+    return ZoneInfo(tz_name)
 
 
-def from_db(s: str) -> datetime:
-    return datetime.strptime(s, DB_FMT)
+def to_local(dt: datetime, tz_name: str) -> datetime:
+    return dt.astimezone(_zone(tz_name))
 
 
-def to_local(s: str, tz_name: str) -> datetime:
-    return from_db(s).replace(tzinfo=timezone.utc).astimezone(ZoneInfo(tz_name))
+def fmt_local(dt: datetime | None, tz_name: str) -> str:
+    return to_local(dt, tz_name).strftime("%d.%m.%Y %H:%M") if dt else "—"
 
 
-def fmt_local(s: str | None, tz_name: str) -> str:
-    if not s:
-        return "—"
-    return to_local(s, tz_name).strftime("%d.%m.%Y %H:%M")
-
-
-def fmt_short_date(s: str | None, tz_name: str) -> str:
-    if not s:
-        return "—"
-    return to_local(s, tz_name).strftime("%d.%m")
+def fmt_short_date(dt: datetime | None, tz_name: str) -> str:
+    return to_local(dt, tz_name).strftime("%d.%m") if dt else "—"
 
 
 def fmt_hours(h: float | None) -> str:

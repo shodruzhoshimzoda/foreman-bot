@@ -1,7 +1,7 @@
 from aiogram.filters import BaseFilter
 from aiogram.types import TelegramObject
 
-from db import Database
+from bot.db import Database
 
 
 class IsChief(BaseFilter):

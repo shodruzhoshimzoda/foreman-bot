@@ -5,10 +5,11 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from db import Database
-from keyboards import approve_kb, chief_menu, foreman_menu
-from notify import safe_send
-from texts import esc
+from bot.config import Config
+from bot.db import Database
+from bot.keyboards import approve_kb, chief_menu, foreman_menu
+from bot.notify import safe_send, set_dashboard_menu
+from bot.texts import esc
 
 router = Router()
 
@@ -33,7 +34,9 @@ FOREMAN_HELP = (
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, command: CommandObject, state: FSMContext, db: Database, bot: Bot):
+async def cmd_start(
+    message: Message, command: CommandObject, state: FSMContext, db: Database, bot: Bot, config: Config
+):
     await state.clear()
     u = message.from_user
     user = await db.get_user(u.id)
@@ -46,6 +49,8 @@ async def cmd_start(message: Message, command: CommandObject, state: FSMContext,
             f"Здравствуйте, {esc(u.first_name)}! Вы вошли как <b>шеф</b>.\n\n" + CHIEF_HELP,
             reply_markup=chief_menu(),
         )
+        if config.webapp_url:
+            await set_dashboard_menu(bot, u.id, config.webapp_url)
         return
 
     if user and user["role"] == "foreman":

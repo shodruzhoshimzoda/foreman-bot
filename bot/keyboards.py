@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    WebAppInfo,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from texts import PERIOD_LABEL, PRIORITY_ICON, PRIORITY_LABEL, preview, short_name
+from bot.texts import PERIOD_LABEL, PRIORITY_ICON, PRIORITY_LABEL, preview, short_name
 
 # ---- кнопки главного меню ----
 BTN_NEW = "➕ Новая задача"
@@ -96,7 +102,15 @@ def foreman_list_kb(tasks) -> InlineKeyboardMarkup:
 
 
 # ---- статистика ----
-def stats_kb(rows, days: int) -> InlineKeyboardMarkup:
+def dashboard_btn(url: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="📱 Открыть дашборд", web_app=WebAppInfo(url=url))
+
+
+def dashboard_kb(url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[dashboard_btn(url)]])
+
+
+def stats_kb(rows, days: int, webapp_url: str = "") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for d, label in PERIOD_LABEL.items():
         b.button(text=("• " if d == days else "") + label, callback_data=f"st:{d}")
@@ -108,6 +122,8 @@ def stats_kb(rows, days: int) -> InlineKeyboardMarkup:
             )
         )
     b.row(InlineKeyboardButton(text="📥 Экспорт CSV", callback_data=f"stx:{days}"))
+    if webapp_url:
+        b.row(dashboard_btn(webapp_url))
     return _kb(b)
 
 

@@ -1,8 +1,8 @@
 from aiogram import Router
 from aiogram.types import CallbackQuery, Message
 
-from db import Database
-from keyboards import chief_menu, foreman_menu
+from bot.db import Database
+from bot.keyboards import chief_menu, foreman_menu
 
 router = Router()
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from config import Config
-from db import ACTIVE, Database
-from filters import IsActiveForeman
-from keyboards import BTN_MY, BTN_MYSTATS, foreman_list_kb
-from notify import safe_edit, send_task
-from texts import foreman_header, stat_block, task_line
+from bot.config import Config
+from bot.db import ACTIVE, Database
+from bot.filters import IsActiveForeman
+from bot.keyboards import BTN_MY, BTN_MYSTATS, foreman_list_kb
+from bot.notify import safe_edit, send_task
+from bot.texts import foreman_header, stat_block, task_line
 
 router = Router()
 router.message.filter(IsActiveForeman())
@@ -49,9 +51,11 @@ async def view_task(cb: CallbackQuery, db: Database, bot: Bot):
 async def my_stats(message: Message, state: FSMContext, db: Database, config: Config):
     await state.clear()
     uid = message.from_user.id
-    month = await db.stats(foreman_id=uid, days=30)
-    total = await db.stats(foreman_id=uid, days=None)
-    recent = await db.recent_tasks(uid, None, limit=10)
+    month, total, recent = await asyncio.gather(
+        db.stats(foreman_id=uid, days=30),
+        db.stats(foreman_id=uid, days=None),
+        db.recent_tasks(uid, None, limit=10),
+    )
 
     text = "📈 <b>Ваша статистика</b>\n\n<b>За 30 дней</b>\n" + stat_block(month[0], with_name=False)
     text += "\n\n<b>За всё время</b>\n" + stat_block(total[0], with_name=False)

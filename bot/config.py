@@ -11,9 +11,14 @@ from dotenv import load_dotenv
 class Config:
     bot_token: str
     admin_ids: tuple[int, ...]
-    db_path: str
+    database_url: str
     tz: str
     digest_hour: int
+    webapp_url: str = ""      # публичный HTTPS-адрес дашборда; пусто — веб-часть выключена
+    web_host: str = "127.0.0.1"
+    web_port: int = 8080
+    media_cache_dir: str = "data/media"
+    media_cache_mb: int = 500
 
 
 def load_config() -> Config:
@@ -31,16 +36,29 @@ def load_config() -> Config:
     if not admin_ids:
         raise SystemExit("ADMIN_IDS пуст: укажите Telegram ID хотя бы одного шефа.")
 
+    dsn = os.getenv("DATABASE_URL", "").strip()
+    if not dsn:
+        raise SystemExit("DATABASE_URL не задан, например: postgresql://foreman:foreman@localhost:5432/foreman")
+
     tz = os.getenv("TZ", "Asia/Dushanbe").strip()
     try:
         ZoneInfo(tz)
     except Exception:
         raise SystemExit(f"Неизвестный часовой пояс: {tz}")
 
+    webapp_url = os.getenv("WEBAPP_URL", "").strip().rstrip("/")
+    if webapp_url and not webapp_url.startswith("https://"):
+        raise SystemExit("WEBAPP_URL должен начинаться с https:// (Telegram не открывает Mini App по http).")
+
     return Config(
         bot_token=token,
         admin_ids=admin_ids,
-        db_path=os.getenv("DB_PATH", "data/bot.db"),
+        database_url=dsn,
         tz=tz,
         digest_hour=int(os.getenv("DIGEST_HOUR", "8")),
+        webapp_url=webapp_url,
+        web_host=os.getenv("WEB_HOST", "127.0.0.1"),
+        web_port=int(os.getenv("WEB_PORT", "8080")),
+        media_cache_dir=os.getenv("MEDIA_CACHE_DIR", "data/media"),
+        media_cache_mb=int(os.getenv("MEDIA_CACHE_MB", "500")),
     )
