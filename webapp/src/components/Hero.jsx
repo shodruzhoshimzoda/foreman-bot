@@ -41,6 +41,12 @@ export default memo(function Hero({ s, days, onOpenTasks }) {
           <span className="tile__v tile__v--warn">{s.active_now}</span>
           <span className="tile__l">в работе сейчас</span>
         </button>
+        {s.reported_now > 0 && (
+          <button className="tile" onClick={() => onOpenTasks({ status: 'reported' })}>
+            <span className="tile__v tile__v--wait">{s.reported_now}</span>
+            <span className="tile__l">ждут одобрения</span>
+          </button>
+        )}
         <div className="tile">
           <span className="tile__v">{fmtHours(s.avg_hours)}</span>
           <span className="tile__l">среднее время</span>

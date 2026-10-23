@@ -17,6 +17,7 @@ const MESSAGES = {
   failed: (t) => `❌ Задача #${t.id} · ${t.foreman} — не выполнена`,
   cancelled: (t) => `🚫 Задача #${t.id} · ${t.foreman} — отменена`,
   new: (t) => `↩ Задача #${t.id} снова в работе`,
+  approved: (t) => `✅ Задача #${t.id} · ${t.foreman} — одобрена`,
 }
 
 function Problem({ error, onRetry }) {
@@ -104,15 +105,15 @@ export default function App() {
     setBusy((b) => new Set(b).add(task.id))
     try {
       const { task: u } = await setTaskStatus(task.id, to)
-      setOverrides((o) => ({ ...o, [task.id]: { status: u.status, closed_at: u.closed_at } }))
+      setOverrides((o) => ({ ...o, [task.id]: { status: u.status, closed_at: u.closed_at, reported_at: u.reported_at } }))
       tg?.HapticFeedback?.notificationOccurred?.(to === 'failed' ? 'warning' : 'success')
-      note('ok', MESSAGES[to](task), to === 'new' ? null : () => actRef.current(task, 'new'))
+      note('ok', MESSAGES[to === 'done' && task.status === 'reported' ? 'approved' : to](task), to === 'new' ? null : () => actRef.current(task, 'new'))
       load(daysRef.current, { silent: true }) // обновить цифры на «Обзоре» и «Прорабах»
     } catch (e) {
       if (e.status === 409 && e.data?.task) {
         // задачу уже закрыли в другом месте (например, в боте) — показываем актуальное состояние
         const u = e.data.task
-        setOverrides((o) => ({ ...o, [task.id]: { status: u.status, closed_at: u.closed_at } }))
+        setOverrides((o) => ({ ...o, [task.id]: { status: u.status, closed_at: u.closed_at, reported_at: u.reported_at } }))
         note('err', 'Статус этой задачи уже изменён — показано актуальное состояние.')
         load(daysRef.current, { silent: true })
       } else if (e.status === 401 || e.status === 403) {
@@ -203,7 +204,7 @@ export default function App() {
       <TaskActions.Provider value={actions}>
       <TaskPanelContext.Provider value={openPanel}>
       <div className={`shell ${fatal ? 'shell--solo' : ''}`}>
-        {!fatal && <Sidebar tab={tab} onChange={go} badge={data?.summary.active_now ?? 0} fullscreen={fullscreen} />}
+        {!fatal && <Sidebar tab={tab} onChange={go} badge={(data?.summary.active_now ?? 0) + (data?.summary.reported_now ?? 0)} fullscreen={fullscreen} />}
 
         <main className="content">
           <header className="top">

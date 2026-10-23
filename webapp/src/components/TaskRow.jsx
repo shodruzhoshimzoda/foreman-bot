@@ -5,6 +5,7 @@ import { PhotoBlock } from './Media.jsx'
 import { kindTag } from '../media.js'
 import VoicePlayer from './VoicePlayer.jsx'
 import ActionButtons from './ActionButtons.jsx'
+import DueTag from './DueTag.jsx'
 import { TaskPanelContext, openProps, useTaskView } from './actions.jsx'
 
 const LONG = 140
@@ -42,6 +43,7 @@ export default memo(function TaskRow({ t: raw, tz }) {
           <div className="trow__tags">
             <span className="tag"><i className="dot" style={{ background: pr.color }} />{pr.one}</span>
             <span className="tag">{kindTag(t)}</span>
+            <DueTag t={t} tz={tz} />
             {t.status === 'done' && t.closed_at && <span className="tag tag--ok">за {fmtSpent(t.created_at, t.closed_at)}</span>}
           </div>
         </div>

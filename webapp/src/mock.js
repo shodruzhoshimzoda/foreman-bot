@@ -3,7 +3,8 @@ const rnd = (seed) => () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483
 const NAMES = ['Иванов Алишер', 'Петров Сергей', 'Каримов Рустам', 'Назаров Фарход', 'Сафаров Умед']
 const KINDS = ['text', 'photo', 'voice', 'video', 'document']
 const PRIOS = ['urgent', 'high', 'normal']
-const STATUSES = ['new', 'done', 'done', 'failed', 'cancelled', 'new']
+const STATUSES = ['new', 'done', 'reported', 'failed', 'cancelled', 'new']
+const DUE_H = { urgent: 24, high: 24 * 7, normal: 24 * 30 }
 const TEXTS = ['Залить фундамент на втором участке до пятницы', 'Проверить армирование', '', 'Принять бетон, 12 кубов. Фото накладной прислать шефу.', 'Закрыть сметы по блоку Б']
 
 const LONG = 'Залить фундамент на втором участке до пятницы.\n\nПеред заливкой:\n— проверить армирование и опалубку;\n— принять бетон (12 кубов), накладную сфотографировать;\n— после заливки накрыть плёнкой и записать голосовое: как прошло.\n\n' + 'Если что-то пойдёт не так — сразу звонить мне, не ждать вечера. '.repeat(8)
@@ -53,7 +54,9 @@ function mkTask(id, k) {
     id, foreman_id: (k % 5) + 1, foreman: f, kind, priority: PRIOS[k % 3], status, album,
     text: k === 5 ? LONG : kind === 'text' ? TEXTS[(k % 4) + (k % 4 === 2 ? 1 : 0)] : k % 3 === 0 && !album ? '' : TEXTS[k % 5],
     created_at: new Date(created).toISOString(),
-    closed_at: status === 'new' ? null : new Date(created + (1 + (k % 7)) * 1.9e6).toISOString(),
+    closed_at: status === 'new' || status === 'reported' ? null : new Date(created + (1 + (k % 7)) * 1.9e6).toISOString(),
+    reported_at: status === 'reported' ? new Date(created + 2 * 1.9e6).toISOString() : null,
+    due_at: new Date(created + DUE_H[PRIOS[k % 3]] * 3.6e6).toISOString(),
     media,
   }
 }
@@ -75,9 +78,12 @@ export function mockTask(id) {
 export function mockSetStatus(id, status) {
   const t = ALL.find((x) => x.id === id)
   const closing = status !== 'new'
-  if (closing === (t.status !== 'new')) throw Object.assign(new Error('conflict'), { status: 409, data: { task: t } })
+  const open = t.status === 'new' || t.status === 'reported'
+  if (closing !== open && !(status === 'new' && t.status === 'reported'))
+    throw Object.assign(new Error('conflict'), { status: 409, data: { task: t } })
   t.status = status
   t.closed_at = closing ? new Date().toISOString() : null
+  t.reported_at = null
   return { task: { ...t } }
 }
 
@@ -92,11 +98,11 @@ export function mockDashboard(days) {
   const scale = days === 0 ? 4 : days === 30 ? 2 : 1
   const foremen = NAMES.map((name, i) => {
     const done = Math.floor((8 - i) * scale + r() * 3), failed = Math.floor(r() * 3 * scale)
-    const cancelled = Math.floor(r() * 2), active = Math.floor(r() * 4)
-    const total = done + failed + cancelled + active
+    const cancelled = Math.floor(r() * 2), active = Math.floor(r() * 4), reported = Math.floor(r() * 2)
+    const total = done + failed + cancelled + active + reported
     const k = Object.fromEntries(KINDS.map((x) => [x, 0])), p = { urgent: 0, high: 0, normal: 0 }
     for (let n = 0; n < total; n++) { k[KINDS[Math.floor(r() * 3.4)]]++; p[PRIOS[Math.floor(r() * r() * 3)]]++ }
-    return { id: i + 1, name, total, done, failed, cancelled, active,
+    return { id: i + 1, name, total, done, failed, cancelled, active, reported,
       completion: done + failed ? Math.round((done / (done + failed)) * 100) : null,
       avg_hours: done ? 1 + r() * 30 : null, priority: p, kinds: k }
   })
@@ -105,16 +111,17 @@ export function mockDashboard(days) {
   const daily = Array.from({ length: n }, (_, i) => {
     const d = new Date(today); d.setDate(d.getDate() - (n - 1 - i))
     const total = Math.floor(r() * 7), done = Math.floor(total * 0.6), failed = Math.floor((total - done) / 2)
-    return { date: d.toISOString().slice(0, 10), total, done, failed, cancelled: 0, active: total - done - failed }
+    return { date: d.toISOString().slice(0, 10), total, done, failed, cancelled: 0, reported: 0, active: total - done - failed }
   })
-  const totals = ['total', 'done', 'failed', 'cancelled', 'active'].reduce((a, k) => ({ ...a, [k]: sum(k) }), {})
+  const totals = ['total', 'done', 'failed', 'cancelled', 'active', 'reported'].reduce((a, k) => ({ ...a, [k]: sum(k) }), {})
   return {
     tz: 'Asia/Dushanbe', days, generated_at: new Date().toISOString(), media_enabled: true,
-    summary: { ...totals, completion: Math.round((sum('done') / Math.max(sum('done') + sum('failed'), 1)) * 100), avg_hours: 14.2, foremen: foremen.length, active_now: ALL.filter((t) => t.status === 'new').length },
+    summary: { ...totals, completion: Math.round((sum('done') / Math.max(sum('done') + sum('failed'), 1)) * 100), avg_hours: 14.2, foremen: foremen.length, active_now: ALL.filter((t) => t.status === 'new').length, reported_now: ALL.filter((t) => t.status === 'reported').length },
     by_priority: Object.fromEntries(PRIOS.map((p) => [p, foremen.reduce((a, f) => a + f.priority[p], 0)])),
     by_kind: Object.fromEntries(KINDS.map((k) => [k, foremen.reduce((a, f) => a + f.kinds[k], 0)])),
     foremen, daily, daily_days: n,
     recent: ALL.slice(0, 6).map(listView),
+    awaiting: ALL.filter((t) => t.status === 'reported').slice(0, 5).map(listView),
     stale: ALL.filter((t) => t.status === 'new').slice(-3).reverse().map(listView),
   }
 }

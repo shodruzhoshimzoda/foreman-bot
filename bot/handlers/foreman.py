@@ -9,9 +9,9 @@ from aiogram.types import CallbackQuery, Message
 from bot.config import Config
 from bot.db import ACTIVE, Database
 from bot.filters import IsActiveForeman
-from bot.keyboards import BTN_MY, BTN_MYSTATS, foreman_list_kb
-from bot.notify import safe_edit, send_task
-from bot.texts import foreman_header, stat_block, task_line
+from bot.keyboards import BTN_MY, BTN_MYSTATS, chief_actions_kb, foreman_done_kb, foreman_list_kb
+from bot.notify import drop_keyboard, safe_edit, safe_send, send_task
+from bot.texts import PRIORITY_LABEL, esc, foreman_header, stat_block, task_line
 
 router = Router()
 router.message.filter(IsActiveForeman())
@@ -35,16 +35,42 @@ async def my_tasks(message: Message, state: FSMContext, db: Database):
 
 
 @router.callback_query(F.data.startswith("fv:"))
-async def view_task(cb: CallbackQuery, db: Database, bot: Bot):
+async def view_task(cb: CallbackQuery, db: Database, bot: Bot, config: Config):
     t = await db.get_task(int(cb.data.split(":")[1]))
     if not t or t["foreman_id"] != cb.from_user.id:
         return await cb.answer("Задача не найдена", show_alert=True)
     if t["status"] not in ACTIVE:
         text, kb = await _render_list(db, cb.from_user.id)
         await safe_edit(cb.message, text, kb)
-        return await cb.answer("Эта задача уже закрыта шефом", show_alert=True)
-    await send_task(bot, cb.from_user.id, t, foreman_header(t))
+        note = "Вы уже отметили эту задачу — ждёт одобрения шефа" if t["status"] == "reported" else "Эта задача уже закрыта шефом"
+        return await cb.answer(note, show_alert=True)
+    await send_task(
+        bot, cb.from_user.id, t, foreman_header(t, tz=config.tz),
+        foreman_done_kb(t["id"]), kb_prompt="Когда выполните — нажмите:",
+    )
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("fd:"))
+async def report_done(cb: CallbackQuery, db: Database, bot: Bot):
+    """Прораб нажал «Сделал»: задача отмечена выполненной, но ждёт одобрения шефа."""
+    t = await db.get_task(int(cb.data.split(":")[1]))
+    if not t or t["foreman_id"] != cb.from_user.id:
+        return await cb.answer("Задача не найдена", show_alert=True)
+    if not await db.report_done(t["id"], cb.from_user.id):
+        await drop_keyboard(cb.message)
+        return await cb.answer("Эта задача уже отмечена или закрыта", show_alert=True)
+    await drop_keyboard(cb.message)
+    await cb.message.answer(f"☑️ Задача #{t['id']} отмечена как выполненная. Ждёт подтверждения шефа.")
+    await cb.answer("Отправлено шефу")
+
+    t = await db.get_task(t["id"])
+    await safe_send(
+        bot, t["chief_id"],
+        f"☑️ <b>{esc(t['foreman_name'])}</b> отметил(а) задачу <b>#{t['id']}</b> как выполненную\n"
+        f"{PRIORITY_LABEL.get(t['priority'], t['priority'])}\n\nОдобрить?",
+        chief_actions_kb(t["id"], reported=True),
+    )
 
 
 @router.message(F.text == BTN_MYSTATS)

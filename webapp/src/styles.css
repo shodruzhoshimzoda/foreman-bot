@@ -12,6 +12,7 @@
   --c-failed: #ff4d42;
   --c-active: #ff9f0a;
   --c-cancel: #9aa2ab;
+  --c-reported: #8b5cf6;
   --r: 18px;
   --shadow: 0 1px 2px rgba(20, 30, 50, .05), 0 6px 18px rgba(20, 30, 50, .06);
   color-scheme: light dark;
@@ -132,6 +133,10 @@ button.tile:active { background: rgba(255, 255, 255, .26); }
 .badge--hint { color: var(--c-active); background: color-mix(in srgb, var(--c-active) 15%, transparent); }
 .tcard__foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .tag { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--hint); background: var(--soft); border-radius: 999px; padding: 3px 9px; }
+.tile__v--wait { color: var(--c-reported); }
+.tag--due { color: var(--hint); }
+.tag--late { color: var(--c-failed); background: color-mix(in srgb, var(--c-failed) 13%, transparent); font-weight: 600; }
+.tag--wait { color: color-mix(in srgb, var(--c-reported) 85%, var(--text)); background: color-mix(in srgb, var(--c-reported) 14%, transparent); font-weight: 600; }
 .tag--ok { color: color-mix(in srgb, var(--c-done) 80%, var(--text)); background: color-mix(in srgb, var(--c-done) 15%, transparent); }
 
 /* ---------- кнопки результата ---------- */
@@ -141,6 +146,8 @@ button.tile:active { background: rgba(255, 255, 255, .26); }
 .act:disabled { opacity: .5; cursor: default; }
 .act--done { flex: 1; background: color-mix(in srgb, var(--c-done) 16%, transparent); color: color-mix(in srgb, var(--c-done) 78%, var(--text)); }
 .act--fail { flex: 1; background: color-mix(in srgb, var(--c-failed) 13%, transparent); color: color-mix(in srgb, var(--c-failed) 82%, var(--text)); }
+.act--approve { flex: 1; background: color-mix(in srgb, var(--c-reported) 16%, transparent); color: color-mix(in srgb, var(--c-reported) 80%, var(--text)); }
+.act--back { flex: none; width: 44px; padding: 11px 0; background: var(--soft); }
 .act--cancel { flex: none; width: 44px; padding: 11px 0; background: var(--soft); }
 @media (max-width: 359px) { .act { font-size: 13px; gap: 4px; } .act span[aria-hidden] { display: none; } }
 .acts--closed { align-items: center; justify-content: space-between; }

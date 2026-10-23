@@ -12,9 +12,18 @@ export default memo(function Overview({ data, onOpenTasks }) {
   const { overrides } = useTaskActions()
   // закрытые в этом сеансе задачи сразу пропадают из «дольше всего в работе»
   const stale = data.stale.filter((t) => !overrides[t.id] || overrides[t.id].status === 'new')
+  const awaiting = (data.awaiting || []).filter((t) => !overrides[t.id] || overrides[t.id].status === 'reported')
   return (
     <>
       <Hero s={s} days={data.days} onOpenTasks={onOpenTasks} />
+      {awaiting.length > 0 && (
+        <section>
+          <h2>☑️ Ждут вашего одобрения</h2>
+          <div className="cards">
+            {awaiting.map((t) => <TaskCard key={t.id} t={t} tz={tz} hint={`сделал(а) ${fmtAge(t.reported_at || t.created_at)} назад`} />)}
+          </div>
+        </section>
+      )}
       {s.total === 0 && <p className="empty">За выбранный период задач не было.</p>}
 
       <div className={`ov-grid ${stale.length ? '' : 'ov-grid--solo'}`}>

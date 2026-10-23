@@ -274,6 +274,58 @@ async def run(db: Database, dsn: str) -> None:
     assert session.sent("SendMediaGroup") and "Отметьте результат" in session.sent("SendMessage")[-1].text
     assert session.sent("SendMessage")[-1].reply_markup is not None
 
+    # ---------------- сроки в кнопках и «Сделал» у прораба ----------------
+    await db.pool.execute("UPDATE tasks SET status='cancelled' WHERE status='new'")
+    session.calls.clear()
+    await h.say(CHIEF, "➕ Новая задача")
+    await h.say(CHIEF, "Убрать мусор")
+    prio_kb = session.sent("SendMessage")[-1].reply_markup.inline_keyboard
+    labels = [b.text for row in prio_kb for b in row]
+    assert any("Срочная" in x and "1 день" in x for x in labels) and any("Важная" in x and "7 дней" in x for x in labels)
+    assert any("Обычная" in x and "1 месяц" in x for x in labels)
+    await h.press(CHIEF, "nt_pr:urgent")
+    await h.press(CHIEF, f"nt_f:{F1}")
+    session.calls.clear()
+    await h.press(CHIEF, "nt_send")
+    sent = [c for c in session.sent("SendMessage") if c.chat_id == F1][0]
+    assert "Срок: до" in sent.text and sent.reply_markup.inline_keyboard[0][0].text == "✅ Сделал"
+    tid = (await db.list_tasks(chief_id=CHIEF))[0]["id"]
+
+    # чужой прораб не может отметить чужую задачу
+    await h.press(F2, f"fd:{tid}")
+    assert (await db.get_task(tid))["status"] == "new"
+
+    session.calls.clear()
+    await h.press(F1, f"fd:{tid}")
+    assert (await db.get_task(tid))["status"] == "reported"
+    to_chief = [c for c in session.sent("SendMessage") if c.chat_id == CHIEF]
+    assert to_chief and "отметил" in to_chief[0].text
+    assert [b.callback_data for row in to_chief[0].reply_markup.inline_keyboard for b in row] == [
+        f"ct_done:{tid}", f"ct_reopen:{tid}", f"ct_fail:{tid}"]
+    await h.press(F1, f"fd:{tid}")                      # повторное нажатие ничего не ломает
+    assert (await db.get_task(tid))["status"] == "reported"
+    assert tid not in [t["id"] for t in await db.list_tasks(foreman_id=F1)]   # из списка прораба ушла
+
+    # у шефа задача в «Активных» с пометкой ☑️; открывается с кнопками «Одобрить / Вернуть»
+    session.calls.clear()
+    await h.say(CHIEF, "📋 Активные задачи")
+    lst = session.sent("SendMessage")[-1]
+    assert any("☑️" in b.text for row in lst.reply_markup.inline_keyboard for b in row)
+    session.calls.clear()
+    await h.press(CHIEF, f"ct_view:{tid}")
+    assert any(b.callback_data == f"ct_reopen:{tid}" for c in session.sent("SendMessage") if c.reply_markup
+               for row in c.reply_markup.inline_keyboard for b in row)
+
+    # шеф возвращает в работу -> прораб видит снова, шеф потом одобряет
+    session.calls.clear()
+    await h.press(CHIEF, f"ct_reopen:{tid}")
+    assert (await db.get_task(tid))["status"] == "new"
+    assert any(c.chat_id == F1 and "вернул" in c.text for c in session.sent("SendMessage"))
+    await h.press(F1, f"fd:{tid}")
+    await h.press(CHIEF, f"ct_done:{tid}")
+    done = await db.get_task(tid)
+    assert done["status"] == "done" and done["closed_at"]
+
     print("OK: хендлеры отработали без ошибок")
     await bot.session.close()
 

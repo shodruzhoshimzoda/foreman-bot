@@ -25,7 +25,7 @@ PERIODS = (7, 30, 0)          # 0 — всё время
 CHART_MAX_DAYS = 90           # график по дням не длиннее 90 дней
 CACHE_TTL = 5.0               # секунд: защита от «дёрганья» обновления
 KINDS = ("text", "photo", "voice", "video", "document")
-STATUSES = ("new", "done", "failed", "cancelled")
+STATUSES = ("new", "reported", "done", "failed", "cancelled")
 
 DB = web.AppKey("db", Database)
 CFG = web.AppKey("config", Config)
@@ -55,6 +55,8 @@ def _task(t, media: MediaStore | None = None, full: bool = False) -> dict:
         "text": text if full else text[:600] + ("…" if len(text) > 600 else ""),
         "created_at": t["created_at"].isoformat(),
         "closed_at": t["closed_at"].isoformat() if t["closed_at"] else None,
+        "due_at": t["due_at"].isoformat() if t["due_at"] else None,
+        "reported_at": t["reported_at"].isoformat() if t["reported_at"] else None,
         "media": None,
         "album": 0,
     }
@@ -79,6 +81,7 @@ def _foreman(r) -> dict:
         "failed": r["failed"],
         "cancelled": r["cancelled"],
         "active": r["active"],
+        "reported": r["reported"],
         "completion": _pct(r["done"], r["failed"]),
         "avg_hours": r["avg_hours"],
         "priority": {"urgent": r["prio_urgent"], "high": r["prio_high"], "normal": r["prio_normal"]},
@@ -99,6 +102,7 @@ def _fill_days(rows, first, last) -> list[dict]:
                 "failed": r["failed"] if r else 0,
                 "cancelled": r["cancelled"] if r else 0,
                 "active": r["active"] if r else 0,
+                "reported": r["reported"] if r else 0,
             }
         )
         d += timedelta(days=1)
@@ -115,16 +119,18 @@ async def build_dashboard(
     chart_start = datetime.combine(first_day, datetime.min.time(), tzinfo=tz)
 
     # независимые запросы идут параллельно, каждый на своём соединении из пула
-    stats, daily, recent, stale, active_now = await asyncio.gather(
+    stats, daily, recent, stale, active_now, reported_now, awaiting = await asyncio.gather(
         db.stats(chief_id=chief_id, days=days or None),
         db.daily_series(chief_id, chart_start, config.tz),
         db.recent_for_chief(chief_id, days or None, limit=RECENT_ON_OVERVIEW),
         db.stale_active(chief_id, limit=5),
         db.active_count(chief_id),
+        db.reported_count(chief_id),
+        db.tasks_page(chief_id, status="reported", limit=5),
     )
 
     foremen = [_foreman(r) for r in stats]
-    totals = {k: sum(f[k] for f in foremen) for k in ("total", "done", "failed", "cancelled", "active")}
+    totals = {k: sum(f[k] for f in foremen) for k in ("total", "done", "failed", "cancelled", "active", "reported")}
     done_w = sum(f["done"] for f in foremen if f["avg_hours"] is not None)
     avg = (
         sum(f["avg_hours"] * f["done"] for f in foremen if f["avg_hours"] is not None) / done_w if done_w else None
@@ -139,6 +145,7 @@ async def build_dashboard(
             "avg_hours": avg,
             "foremen": len(foremen),
             "active_now": active_now,
+            "reported_now": reported_now,
         },
         "by_priority": {p: sum(f["priority"][p] for f in foremen) for p in ("urgent", "high", "normal")},
         "by_kind": {k: sum(f["kinds"][k] for f in foremen) for k in KINDS},
@@ -147,6 +154,7 @@ async def build_dashboard(
         "daily_days": chart_days,
         "recent": [_task(t, media) for t in recent],
         "stale": [_task(t, media) for t in stale],
+        "awaiting": [_task(t, media) for t in awaiting],
         "media_enabled": media is not None,
     }
 
@@ -243,8 +251,9 @@ async def task_detail(request: web.Request) -> web.Response:
 async def set_task_status(request: web.Request) -> web.Response:
     """Шеф отмечает результат прямо из дашборда: POST /api/tasks/{id}/status {"status": "done|failed|cancelled|new"}.
 
-    Те же правила, что у кнопок в боте: закрыть можно только задачу «в работе». Дополнительно — «new»:
-    вернуть закрытую задачу в работу (исправить ошибочный клик). Прорабу, как и в боте, ничего не отправляется.
+    Те же правила, что у кнопок в боте: закрыть можно задачу «в работе» или ту, что прораб отметил «сделал»
+    (так шеф её одобряет). Дополнительно — «new»: вернуть в работу закрытую или не принятую задачу.
+    Прорабу, как и в боте, ничего не отправляется.
     """
     chief_id = await _auth_chief(request)
     try:

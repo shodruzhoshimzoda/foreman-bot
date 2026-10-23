@@ -3,6 +3,7 @@ export const STATUS = {
   done: { label: 'Выполнена', icon: '✅', color: 'var(--c-done)' },
   failed: { label: 'Не выполнена', icon: '❌', color: 'var(--c-failed)' },
   cancelled: { label: 'Отменена', icon: '🚫', color: 'var(--c-cancel)' },
+  reported: { label: 'Ждёт одобрения', icon: '☑️', color: 'var(--c-reported)' },
 }
 
 export const PRIORITY = {
@@ -24,6 +25,15 @@ export const PERIODS = [
   { days: 30, label: '30 дней' },
   { days: 0, label: 'Всё время' },
 ]
+
+// Срок задачи: { text: 'до 25.10, 14:51', late: true/false } или null (у старых данных срока нет).
+// Для задач не «в работе» просрочка не показывается — они уже сделаны или закрыты.
+export function dueInfo(t, tz, now = Date.now()) {
+  if (!t.due_at) return null
+  const d = new Date(t.due_at)
+  const text = 'до ' + d.toLocaleString('ru-RU', { timeZone: tz, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return { text, late: t.status === 'new' && d.getTime() < now }
+}
 
 export const fmtPct = (v) => (v == null ? '—' : `${v}%`)
 

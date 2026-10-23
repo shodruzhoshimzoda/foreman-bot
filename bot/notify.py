@@ -31,14 +31,17 @@ async def safe_send(bot: Bot, chat_id: int, text: str, kb: InlineKeyboardMarkup 
         return False
 
 
-async def send_task(bot: Bot, chat_id: int, t, header: str, kb: InlineKeyboardMarkup | None = None) -> bool:
+async def send_task(
+    bot: Bot, chat_id: int, t, header: str, kb: InlineKeyboardMarkup | None = None,
+    kb_prompt: str = "Отметьте результат:",
+) -> bool:
     """Отправляет задачу в её исходном виде (текст, фото, голосовое...) с заголовком."""
     text = t["text"] or ""
     kind = t["kind"]
     items = album_items(t)
     try:
         if items:
-            return await _send_album(bot, chat_id, t, items, header, kb)
+            return await _send_album(bot, chat_id, t, items, header, kb, kb_prompt)
         if kind == "text" or kind not in _MEDIA_SENDERS:
             body = f"\n\n{esc(text[:_TEXT_LIMIT])}" if text else ""
             await bot.send_message(chat_id, header + body, reply_markup=kb)
@@ -56,7 +59,9 @@ async def send_task(bot: Bot, chat_id: int, t, header: str, kb: InlineKeyboardMa
         return False
 
 
-async def _send_album(bot: Bot, chat_id: int, t, items: list, header: str, kb: InlineKeyboardMarkup | None) -> bool:
+async def _send_album(
+    bot: Bot, chat_id: int, t, items: list, header: str, kb: InlineKeyboardMarkup | None, kb_prompt: str
+) -> bool:
     """Несколько фото/видео одним альбомом; заголовок и текст — в подписи к первому."""
     text = t["text"] or ""
     long_text = len(text) > _CAPTION_TEXT_LIMIT
@@ -70,7 +75,7 @@ async def _send_album(bot: Bot, chat_id: int, t, items: list, header: str, kb: I
         if long_text:
             await bot.send_message(chat_id, esc(text[:_TEXT_LIMIT]))
         if kb:  # к альбому кнопки не прикрепить — отдельным сообщением
-            await bot.send_message(chat_id, "Отметьте результат:", reply_markup=kb)
+            await bot.send_message(chat_id, kb_prompt, reply_markup=kb)
         return True
     except TelegramAPIError as e:
         log.warning("Не удалось отправить альбом задачи %s в чат %s: %s", t["id"], chat_id, e)

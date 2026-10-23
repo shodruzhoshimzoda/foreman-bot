@@ -9,7 +9,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.texts import PERIOD_LABEL, PRIORITY_ICON, PRIORITY_LABEL, preview, short_name
+from bot.texts import PERIOD_LABEL, PRIORITY_DUE, PRIORITY_ICON, PRIORITY_LABEL, preview, short_name
 
 # ---- кнопки главного меню ----
 BTN_NEW = "➕ Новая задача"
@@ -55,8 +55,8 @@ def cancel_kb() -> InlineKeyboardMarkup:
 def priority_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for code, label in PRIORITY_LABEL.items():
-        b.button(text=label, callback_data=f"nt_pr:{code}")
-    b.adjust(3)
+        b.button(text=f"{label} · срок {PRIORITY_DUE[code]}", callback_data=f"nt_pr:{code}")
+    b.adjust(1)
     b.row(InlineKeyboardButton(text="✖️ Отмена", callback_data="nt_cancel"))
     return _kb(b)
 
@@ -75,8 +75,14 @@ def foremen_pick_kb(foremen, selected: set[int]) -> InlineKeyboardMarkup:
 
 
 # ---- отметка результата шефом ----
-def chief_actions_kb(task_id: int) -> InlineKeyboardMarkup:
+def chief_actions_kb(task_id: int, reported: bool = False) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    if reported:  # прораб уже нажал «Сделал» — шеф одобряет или возвращает в работу
+        b.button(text="✅ Одобрить", callback_data=f"ct_done:{task_id}")
+        b.button(text="↩️ Вернуть в работу", callback_data=f"ct_reopen:{task_id}")
+        b.button(text="❌ Не выполнено", callback_data=f"ct_fail:{task_id}")
+        b.adjust(2, 1)
+        return _kb(b)
     b.button(text="✅ Выполнено", callback_data=f"ct_done:{task_id}")
     b.button(text="❌ Не выполнено", callback_data=f"ct_fail:{task_id}")
     b.button(text="🚫 Отменить задачу", callback_data=f"ct_cancel:{task_id}")
@@ -84,10 +90,17 @@ def chief_actions_kb(task_id: int) -> InlineKeyboardMarkup:
     return _kb(b)
 
 
+def foreman_done_kb(task_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Сделал", callback_data=f"fd:{task_id}")
+    return _kb(b)
+
+
 def task_list_kb(tasks) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tasks:
-        text = f"{PRIORITY_ICON.get(t['priority'], '•')} #{t['id']} · {short_name(t['foreman_name'], 12)} · {preview(t, 24)}"
+        mark = "☑️" if t["status"] == "reported" else PRIORITY_ICON.get(t["priority"], "•")
+        text = f"{mark} #{t['id']} · {short_name(t['foreman_name'], 12)} · {preview(t, 24)}"
         b.button(text=text, callback_data=f"ct_view:{t['id']}")
     b.adjust(1)
     return _kb(b)

@@ -7,8 +7,14 @@ import asyncpg
 
 from bot.utils import since
 
-ACTIVE = ("new",)
+ACTIVE = ("new",)                      # в работе у прораба
+REPORTED = ("reported",)               # прораб нажал «Сделал», шеф ещё не одобрил
+OPEN = ACTIVE + REPORTED               # всё, что шеф ещё может закрыть
 CLOSED = ("done", "failed", "cancelled")
+
+# Срок выполнения по важности: обычная — 1 месяц, важная — 7 дней, срочная — 1 день.
+# Считается при создании задачи и хранится в tasks.due_at.
+DUE_SQL = "CASE {p} WHEN 'urgent' THEN interval '1 day' WHEN 'high' THEN interval '7 days' ELSE interval '1 month' END"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -31,7 +37,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     file_id     TEXT,
     text        TEXT NOT NULL DEFAULT '',
     priority    TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('normal', 'high', 'urgent')),
-    status      TEXT NOT NULL DEFAULT 'new'    CHECK (status IN ('new', 'done', 'failed', 'cancelled')),
+    status      TEXT NOT NULL DEFAULT 'new'    CHECK (status IN ('new', 'reported', 'done', 'failed', 'cancelled')),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     closed_at   TIMESTAMPTZ
 );
@@ -42,6 +48,27 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS duration INTEGER;
 -- несколько фото/видео в одной задаче (альбом): [{kind, file_id, thumb_id, duration}, ...]; у обычных задач NULL
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS media JSONB;
 
+-- срок выполнения (зависит от важности) и момент, когда прораб нажал «Сделал»
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reported_at TIMESTAMPTZ;
+UPDATE tasks SET due_at = created_at + CASE priority
+        WHEN 'urgent' THEN interval '1 day' WHEN 'high' THEN interval '7 days' ELSE interval '1 month' END
+    WHERE due_at IS NULL;
+
+-- новый статус 'reported' в уже существующей базе: пересоздаём проверку, только если в ней его ещё нет
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'tasks'::regclass AND conname = 'tasks_status_check'
+          AND pg_get_constraintdef(oid) LIKE '%reported%'
+    ) THEN
+        ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_status_check;
+        ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
+            CHECK (status IN ('new', 'reported', 'done', 'failed', 'cancelled'));
+    END IF;
+END $$;
+
 -- выборки по периоду (статистика, экспорт, дашборд)
 CREATE INDEX IF NOT EXISTS idx_tasks_chief_created   ON tasks (chief_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_foreman_created ON tasks (foreman_id, created_at DESC);
@@ -50,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_chief_id        ON tasks (chief_id, id DESC
 -- «горячие» списки: задач в работе всегда мало, индекс по ним крошечный
 CREATE INDEX IF NOT EXISTS idx_tasks_active_chief    ON tasks (chief_id, id) WHERE status = 'new';
 CREATE INDEX IF NOT EXISTS idx_tasks_active_foreman  ON tasks (foreman_id)   WHERE status = 'new';
+CREATE INDEX IF NOT EXISTS idx_tasks_reported_chief  ON tasks (chief_id, id) WHERE status = 'reported';
 
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -63,7 +91,8 @@ FROM tasks t
 JOIN users f ON f.tg_id = t.foreman_id
 """
 
-_PRIORITY_ORDER = "CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END"
+# сначала то, что ждёт одобрения шефа, затем по важности
+_PRIORITY_ORDER = "(t.status = 'reported') DESC, CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END"
 
 # Все счётчики за один проход по задачам: статусы, важность и вид сообщения.
 _STATS_COLUMNS = """
@@ -72,6 +101,7 @@ _STATS_COLUMNS = """
     COUNT(*) FILTER (WHERE t.status = 'failed')     AS failed,
     COUNT(*) FILTER (WHERE t.status = 'cancelled')  AS cancelled,
     COUNT(*) FILTER (WHERE t.status = 'new')        AS active,
+    COUNT(*) FILTER (WHERE t.status = 'reported')   AS reported,
     (AVG(EXTRACT(EPOCH FROM (t.closed_at - t.created_at)) / 3600)
         FILTER (WHERE t.status = 'done'))::float8   AS avg_hours,
     COUNT(*) FILTER (WHERE t.priority = 'urgent')   AS prio_urgent,
@@ -252,8 +282,9 @@ class Database:
         return await self._all(
             """
             WITH ins AS (
-                INSERT INTO tasks (chief_id, foreman_id, kind, file_id, text, priority, thumb_id, duration, media)
-                SELECT $1, fid, $3, $4, $5, $6, $7, $8, $9::jsonb FROM unnest($2::bigint[]) AS fid
+                INSERT INTO tasks (chief_id, foreman_id, kind, file_id, text, priority, thumb_id, duration, media, due_at)
+                SELECT $1, fid, $3, $4, $5, $6, $7, $8, $9::jsonb, now() + """ + DUE_SQL.format(p="$6::text") + """
+                FROM unnest($2::bigint[]) AS fid
                 RETURNING *
             )
             SELECT t.*, f.full_name AS foreman_name
@@ -298,8 +329,9 @@ class Database:
             foreman_id, since(days), limit,
         )
 
-    async def transition(self, task_id: int, to: str, allowed_from: tuple[str, ...] = ACTIVE) -> bool:
-        """Атомарно меняет статус. False — если задача уже в другом статусе."""
+    async def transition(self, task_id: int, to: str, allowed_from: tuple[str, ...] = OPEN) -> bool:
+        """Атомарно меняет статус (по умолчанию закрыть может шеф: из «в работе» или «ждёт одобрения»).
+        False — если задача уже в другом статусе."""
         row = await self._one(
             """
             UPDATE tasks
@@ -313,10 +345,25 @@ class Database:
         return row is not None
 
     async def reopen(self, task_id: int) -> bool:
-        """Возвращает закрытую задачу в работу (исправление ошибочной отметки). False — если она уже в работе."""
+        """Возвращает в работу закрытую задачу (исправление ошибочной отметки) или ту, что прораб отметил
+        «сделал», а шеф не принял. False — если она уже в работе."""
         row = await self._one(
-            "UPDATE tasks SET status='new', closed_at=NULL WHERE id=$1 AND status = ANY($2::text[]) RETURNING id",
-            task_id, list(CLOSED),
+            """
+            UPDATE tasks SET status='new', closed_at=NULL, reported_at=NULL
+            WHERE id=$1 AND status = ANY($2::text[]) RETURNING id
+            """,
+            task_id, list(CLOSED + REPORTED),
+        )
+        return row is not None
+
+    async def report_done(self, task_id: int, foreman_id: int) -> bool:
+        """Прораб нажал «Сделал»: задача ждёт одобрения шефа. False — задачи нет, она не его или уже не «в работе»."""
+        row = await self._one(
+            """
+            UPDATE tasks SET status='reported', reported_at=now()
+            WHERE id=$1 AND foreman_id=$2 AND status='new' RETURNING id
+            """,
+            task_id, foreman_id,
         )
         return row is not None
 
@@ -380,7 +427,8 @@ class Database:
                    COUNT(*) FILTER (WHERE t.status = 'done')      AS done,
                    COUNT(*) FILTER (WHERE t.status = 'failed')    AS failed,
                    COUNT(*) FILTER (WHERE t.status = 'cancelled') AS cancelled,
-                   COUNT(*) FILTER (WHERE t.status = 'new')       AS active
+                   COUNT(*) FILTER (WHERE t.status = 'new')       AS active,
+                   COUNT(*) FILTER (WHERE t.status = 'reported')  AS reported
             FROM tasks t
             WHERE t.chief_id = $1 AND t.created_at >= $2
             GROUP BY 1
@@ -424,6 +472,10 @@ class Database:
     async def active_count(self, chief_id: int) -> int:
         """Сколько задач в работе сейчас — независимо от выбранного периода (частичный индекс)."""
         return await self.pool.fetchval("SELECT COUNT(*) FROM tasks WHERE chief_id=$1 AND status='new'", chief_id)
+
+    async def reported_count(self, chief_id: int) -> int:
+        """Сколько задач прораб уже сделал, но шеф ещё не одобрил — независимо от периода."""
+        return await self.pool.fetchval("SELECT COUNT(*) FROM tasks WHERE chief_id=$1 AND status='reported'", chief_id)
 
     async def stale_active(self, chief_id: int, limit: int = 5):
         """Дольше всего висящие задачи в работе."""

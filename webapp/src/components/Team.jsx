@@ -5,7 +5,7 @@ import { DESKTOP, useMedia } from '../hooks.js'
 
 function Bar({ f }) {
   const t = Math.max(f.total, 1)
-  const parts = [['done', f.done], ['failed', f.failed], ['cancel', f.cancelled], ['active', f.active]]
+  const parts = [['done', f.done], ['failed', f.failed], ['cancel', f.cancelled], ['reported', f.reported], ['active', f.active]]
   return (
     <div className="stack" aria-hidden="true">
       {parts.map(([k, v]) => v > 0 && <span key={k} style={{ width: `${(v / t) * 100}%`, background: `var(--c-${k})` }} />)}
@@ -37,6 +37,7 @@ const Row = memo(function Row({ f, open, onToggle, onOpenTasks }) {
           <Bar f={f} />
           <div className="foreman__nums">
             <span>✅ {f.done}</span><span>❌ {f.failed}</span><span>🔧 {f.active}</span>
+            {f.reported > 0 && <span>☑️ {f.reported}</span>}
             {f.cancelled > 0 && <span>🚫 {f.cancelled}</span>}
             <span className="push">⏱ {fmtHours(f.avg_hours)}</span>
           </div>

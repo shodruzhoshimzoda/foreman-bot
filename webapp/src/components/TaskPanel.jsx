@@ -4,6 +4,7 @@ import { useLayer } from '../backStack.js'
 import { KIND, PRIORITY, STATUS, fmtAge, fmtFull, fmtRel, fmtSpent } from '../format.js'
 import { kindTag } from '../media.js'
 import ActionButtons from './ActionButtons.jsx'
+import DueTag from './DueTag.jsx'
 import Avatar from './Avatar.jsx'
 import { PhotoGallery } from './Media.jsx'
 import VoicePlayer from './VoicePlayer.jsx'
@@ -59,6 +60,7 @@ export default function TaskPanel({ task: preview, tz, onClose, onForeman }) {
           <div className="panel__chips">
             <span className="tag"><i className="dot" style={{ background: pr.color }} />{pr.one}</span>
             <span className="tag">{kindTag(t)}</span>
+            <DueTag t={t} tz={tz} />
             {t.status === 'done' && t.closed_at && <span className="tag tag--ok">за {fmtSpent(t.created_at, t.closed_at)}</span>}
           </div>
 
@@ -98,7 +100,24 @@ export default function TaskPanel({ task: preview, tz, onClose, onForeman }) {
                   <span className="muted">{fmtFull(t.created_at, tz)}</span>
                 </div>
               </li>
-              {closed ? (
+              {t.reported_at && (
+                <li>
+                  <i className="timeline__dot" style={{ background: 'var(--c-reported)' }} />
+                  <div>
+                    <b>☑️ Прораб отметил «сделал»</b>
+                    <span className="muted">{fmtFull(t.reported_at, tz)} · через {fmtSpent(t.created_at, t.reported_at)}</span>
+                  </div>
+                </li>
+              )}
+              {t.status === 'reported' ? (
+                <li className="timeline__now">
+                  <i className="timeline__dot timeline__dot--pulse" style={{ background: 'var(--c-reported)' }} />
+                  <div>
+                    <b>Ждёт вашего одобрения</b>
+                    <span className="muted">с {fmtRel(t.reported_at, tz)}</span>
+                  </div>
+                </li>
+              ) : closed ? (
                 <li>
                   <i className="timeline__dot" style={{ background: st.color }} />
                   <div>

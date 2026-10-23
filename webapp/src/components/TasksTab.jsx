@@ -6,6 +6,7 @@ import { useTaskActions } from './actions.jsx'
 const FILTERS = [
   ['', 'Все'],
   ['new', '🔧 В работе'],
+  ['reported', '☑️ Ждут одобрения'],
   ['done', '✅ Выполнены'],
   ['failed', '❌ Не выполнены'],
   ['cancelled', '🚫 Отменены'],

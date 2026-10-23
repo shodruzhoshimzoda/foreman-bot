@@ -6,6 +6,7 @@ const SERIES = [
   ['done', 'var(--c-done)', 'Выполнено'],
   ['failed', 'var(--c-failed)', 'Не выполнено'],
   ['cancelled', 'var(--c-cancel)', 'Отменено'],
+  ['reported', 'var(--c-reported)', 'Ждёт одобрения'],
   ['active', 'var(--c-active)', 'В работе'],
 ]
 const PAD_L = 26

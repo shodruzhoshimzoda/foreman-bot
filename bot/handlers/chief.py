@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from bot.config import Config
-from bot.db import ACTIVE, Database
+from bot.db import OPEN, Database
 from bot.filters import IsChief
 from bot.keyboards import (
     dashboard_kb,
@@ -24,6 +24,7 @@ from bot.keyboards import (
     cancel_kb,
     chief_actions_kb,
     foremen_pick_kb,
+    foreman_done_kb,
     foreman_menu,
     priority_kb,
     stats_back_kb,
@@ -37,6 +38,7 @@ from bot.texts import (
     album_summary,
     KIND_LABEL,
     PERIOD_LABEL,
+    PRIORITY_DUE,
     PRIORITY_LABEL,
     STATUS_ICON,
     STATUS_LABEL,
@@ -220,13 +222,16 @@ async def _deliver(cb: CallbackQuery, state: FSMContext, db: Database, bot: Bot,
 
     async def _send(task) -> bool:
         async with sem:
-            return await send_task(bot, task["foreman_id"], task, foreman_header(task, new=True))
+            return await send_task(
+                bot, task["foreman_id"], task, foreman_header(task, new=True, tz=config.tz),
+                foreman_done_kb(task["id"]), kb_prompt="Когда выполните — нажмите:",
+            )
 
     results = await asyncio.gather(*(_send(t) for t in tasks))
     delivered = [esc(t["foreman_name"]) for t, ok in zip(tasks, results) if ok]
     failed = [esc(t["foreman_name"]) for t, ok in zip(tasks, results) if not ok]
 
-    text = f"✅ <b>Задача отправлена</b> · {PRIORITY_LABEL[data['priority']]}"
+    text = f"✅ <b>Задача отправлена</b> · {PRIORITY_LABEL[data['priority']]} · срок {PRIORITY_DUE[data['priority']]}"
     if media:
         text += f"\n{album_summary(items)}"
     if delivered:
@@ -254,10 +259,13 @@ async def nt_send_all(cb: CallbackQuery, state: FSMContext, db: Database, bot: B
 # Активные задачи: шеф сам отмечает результат
 # =====================================================================
 async def _render_list(db: Database, chief_id: int):
-    tasks = await db.list_tasks(chief_id=chief_id, statuses=ACTIVE, limit=30)
+    tasks = await db.list_tasks(chief_id=chief_id, statuses=OPEN, limit=30)
     if not tasks:
         return "Активных задач нет. 🎉", None
+    waiting = sum(1 for t in tasks if t["status"] == "reported")
     text = f"📋 <b>Активные задачи</b> ({len(tasks)})\nНажмите на задачу, чтобы открыть её и отметить результат."
+    if waiting:
+        text += f"\n☑️ — прораб отметил «сделал», ждёт вашего одобрения: {waiting}"
     return text, task_list_kb(tasks)
 
 
@@ -273,11 +281,13 @@ async def cb_view(cb: CallbackQuery, db: Database, bot: Bot, config: Config):
     t = await _own_task(db, int(cb.data.split(":")[1]), cb.from_user.id)
     if not t:
         return await cb.answer("Задача не найдена", show_alert=True)
-    if t["status"] not in ACTIVE:
+    if t["status"] not in OPEN:
         text, kb = await _render_list(db, cb.from_user.id)
         await safe_edit(cb.message, text, kb)
         return await cb.answer("Эта задача уже закрыта", show_alert=True)
-    await send_task(bot, cb.from_user.id, t, chief_header(t, config.tz), chief_actions_kb(t["id"]))
+    await send_task(
+        bot, cb.from_user.id, t, chief_header(t, config.tz), chief_actions_kb(t["id"], reported=t["status"] == "reported")
+    )
     await cb.answer()
 
 
@@ -308,6 +318,21 @@ async def ct_fail(cb: CallbackQuery, db: Database):
 @router.callback_query(F.data.startswith("ct_cancel:"))
 async def ct_cancel(cb: CallbackQuery, db: Database):
     await _close(cb, db, "cancelled", "Задача отменена")
+
+
+@router.callback_query(F.data.startswith("ct_reopen:"))
+async def ct_reopen(cb: CallbackQuery, db: Database, bot: Bot):
+    """Шеф не принял «Сделал» — задача снова в работе у прораба."""
+    t = await _own_task(db, int(cb.data.split(":")[1]), cb.from_user.id)
+    if not t:
+        return await cb.answer("Задача не найдена", show_alert=True)
+    if not await db.reopen(t["id"]):
+        await drop_keyboard(cb.message)
+        return await cb.answer("Статус задачи уже изменён", show_alert=True)
+    await drop_keyboard(cb.message)
+    await cb.message.answer(f"↩️ Задача #{t['id']} · {esc(t['foreman_name'])} — снова в работе")
+    await safe_send(bot, t["foreman_id"], f"↩️ Шеф вернул задачу #{t['id']} в работу — она не принята как выполненная.")
+    await cb.answer("Возвращена в работу")
 
 
 # =====================================================================
