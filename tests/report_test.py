@@ -14,7 +14,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from bot.config import Config
 from bot.db import Database
 from bot.keyboards import chief_actions_kb, foreman_done_kb, priority_kb
-from bot.texts import chief_header, foreman_header
+from bot.texts import chief_header, foreman_digest, foreman_header
 from bot.web.server import build_web_app
 from tests.smoke_test import TOKEN, TZ, sign_init_data
 
@@ -139,7 +139,64 @@ async def run(db: Database, dsn: str) -> None:
     # клавиатуры
     data = [b.callback_data for row in chief_actions_kb(5, reported=True).inline_keyboard for b in row]
     assert data == ["ct_done:5", "ct_reopen:5", "ct_fail:5"], data
-    assert foreman_done_kb(5).inline_keyboard[0][0].callback_data == "fd:5"
+    assert [b.callback_data for b in foreman_done_kb(5).inline_keyboard[0]] == ["fa:5", "fd:5"]
+
+    # ---- «Принял»
+    t5 = (await db.create_tasks(CHIEF, [F1], "text", None, "принять", "normal"))[0]["id"]
+    assert (await db.get_task(t5))["accepted_at"] is None
+    assert "Ещё не принял" in chief_header(await db.get_task(t5), TZ)
+    assert not await db.accept(t5, F2)                        # чужая
+    assert await db.accept(t5, F1)
+    assert not await db.accept(t5, F1)                        # повторно — нет
+    assert "Принял:" in chief_header(await db.get_task(t5), TZ)
+    # «Сделал» без «Принял» тоже считает задачу принятой
+    t6 = (await db.create_tasks(CHIEF, [F1], "text", None, "сразу сделал", "normal"))[0]["id"]
+    assert await db.report_done(t6, F1) and (await db.get_task(t6))["accepted_at"]
+    assert not await db.accept(t6, F1)                        # закрытую/сданную уже не принять
+    # возврат в работу не сбрасывает «принял»
+    assert await db.reopen(t6) and (await db.get_task(t6))["accepted_at"]
+    assert [b.text for b in foreman_done_kb(1).inline_keyboard[0]] == ["👍 Принял", "✅ Сделал"]
+    assert [b.text for b in foreman_done_kb(1, accepted=True).inline_keyboard[0]] == ["✅ Сделал"]
+
+    # ---- ежедневная сводка прораба
+    rows = [r for r in await db.foreman_digest_rows() if r["foreman_id"] == F1]
+    assert rows and all(r["status"] in ("new", "reported") for r in rows)
+    text = foreman_digest(rows, "24.10.2026", TZ)
+    assert "Ваши задачи" in text and "В работе" in text and "👀" in text and "до " in text, text
+    assert foreman_digest([], "24.10.2026", TZ) is None
+    # планировщик: каждому прорабу — своя сводка, раз в день
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from bot.scheduler import _digest
+
+    class FakeBot:
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, chat_id, text, reply_markup=None):
+            self.sent.append((chat_id, text))
+
+    hour = datetime.now(ZoneInfo(TZ)).hour
+    cfg = Config(TOKEN, (CHIEF,), dsn, TZ, hour)
+    bot = FakeBot()
+    await _digest(bot, db, cfg)
+    to = {chat for chat, _ in bot.sent}
+    assert to == {CHIEF, F1, F2}, bot.sent                               # у обоих прорабов есть задачи
+    mine = [txt for chat, txt in bot.sent if chat == F1][0]
+    assert "Ваши задачи" in mine and "В работе" in mine
+    chief_txt = [txt for chat, txt in bot.sent if chat == CHIEF][0]
+    assert "Иванов" in chief_txt
+    assert 30 not in to
+    # прораб без задач сводку не получает
+    await db.register_foreman(30, "Без задач", None, CHIEF)
+    await db.set_user_status(30, "active")
+    await _digest(bot, db, cfg)                                          # второй проход в тот же день — тишина
+    assert len(bot.sent) == 3, bot.sent
+
+    # шефская сводка: счётчики «ждёт одобрения» / «не принято»
+    wl = {r["tg_id"]: r for r in await db.workload_all()}
+    assert wl[F1]["active"] >= 1 and wl[F1]["reported"] == 0 and wl[F1]["not_accepted"] >= 1, dict(wl[F1])
 
     # ---- дашборд
     t3 = by["urgent"]["id"]
@@ -158,6 +215,10 @@ async def run(db: Database, dsn: str) -> None:
         assert [x["id"] for x in feed["tasks"]] == [t3]
         task = feed["tasks"][0]
         assert task["status"] == "reported" and task["reported_at"] and task["due_at"]
+        one = (await (await client.get("/api/tasks?status=new", headers=h)).json())["tasks"]
+        by_id = {x["id"]: x for x in one}
+        assert by_id[t5]["accepted_at"] and by_id[t6]["accepted_at"]
+
 
         # одобрение из дашборда
         r = await client.post(f"/api/tasks/{t3}/status", json={"status": "done"}, headers=h)

@@ -90,8 +90,11 @@ def chief_actions_kb(task_id: int, reported: bool = False) -> InlineKeyboardMark
     return _kb(b)
 
 
-def foreman_done_kb(task_id: int) -> InlineKeyboardMarkup:
+def foreman_done_kb(task_id: int, accepted: bool = False) -> InlineKeyboardMarkup:
+    """Под задачей у прораба: «Принял» (пока не принял) и «Сделал»."""
     b = InlineKeyboardBuilder()
+    if not accepted:
+        b.button(text="👍 Принял", callback_data=f"fa:{task_id}")
     b.button(text="✅ Сделал", callback_data=f"fd:{task_id}")
     return _kb(b)
 
@@ -109,7 +112,8 @@ def task_list_kb(tasks) -> InlineKeyboardMarkup:
 def foreman_list_kb(tasks) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for t in tasks:
-        b.button(text=f"{PRIORITY_ICON.get(t['priority'], '•')} #{t['id']} · {preview(t, 34)}", callback_data=f"fv:{t['id']}")
+        new = "" if t["accepted_at"] else "🆕 "   # ещё не принята
+        b.button(text=f"{new}{PRIORITY_ICON.get(t['priority'], '•')} #{t['id']} · {preview(t, 32)}", callback_data=f"fv:{t['id']}")
     b.adjust(1)
     return _kb(b)
 

@@ -51,6 +51,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS media JSONB;
 -- срок выполнения (зависит от важности) и момент, когда прораб нажал «Сделал»
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS reported_at TIMESTAMPTZ;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ;   -- прораб нажал «Принял»
 UPDATE tasks SET due_at = created_at + CASE priority
         WHEN 'urgent' THEN interval '1 day' WHEN 'high' THEN interval '7 days' ELSE interval '1 month' END
     WHERE due_at IS NULL;
@@ -356,11 +357,22 @@ class Database:
         )
         return row is not None
 
+    async def accept(self, task_id: int, foreman_id: int) -> bool:
+        """Прораб нажал «Принял». False — задачи нет, она не его, уже принята или уже не «в работе»."""
+        row = await self._one(
+            """
+            UPDATE tasks SET accepted_at=now()
+            WHERE id=$1 AND foreman_id=$2 AND status='new' AND accepted_at IS NULL RETURNING id
+            """,
+            task_id, foreman_id,
+        )
+        return row is not None
+
     async def report_done(self, task_id: int, foreman_id: int) -> bool:
         """Прораб нажал «Сделал»: задача ждёт одобрения шефа. False — задачи нет, она не его или уже не «в работе»."""
         row = await self._one(
             """
-            UPDATE tasks SET status='reported', reported_at=now()
+            UPDATE tasks SET status='reported', reported_at=now(), accepted_at=COALESCE(accepted_at, now())
             WHERE id=$1 AND foreman_id=$2 AND status='new' RETURNING id
             """,
             task_id, foreman_id,
@@ -408,12 +420,29 @@ class Database:
         """Сколько задач в работе у каждого прораба — по всем шефам сразу (для утренней сводки)."""
         return await self._all(
             """
-            SELECT u.chief_id, u.tg_id, u.full_name, COUNT(t.id) AS active
+            SELECT u.chief_id, u.tg_id, u.full_name,
+                   COUNT(t.id) FILTER (WHERE t.status = 'new')                           AS active,
+                   COUNT(t.id) FILTER (WHERE t.status = 'reported')                      AS reported,
+                   COUNT(t.id) FILTER (WHERE t.status = 'new' AND t.accepted_at IS NULL) AS not_accepted
             FROM users u
-            LEFT JOIN tasks t ON t.foreman_id = u.tg_id AND t.status = 'new'
+            LEFT JOIN tasks t ON t.foreman_id = u.tg_id AND t.status IN ('new', 'reported')
             WHERE u.role = 'foreman' AND u.status = 'active' AND u.chief_id IS NOT NULL
             GROUP BY u.tg_id
             ORDER BY u.chief_id, active DESC, u.full_name
+            """
+        )
+
+    async def foreman_digest_rows(self):
+        """Незакрытые задачи (в работе и ждущие одобрения) всех активных прорабов — для их ежедневной сводки."""
+        return await self._all(
+            """
+            SELECT t.id, t.foreman_id, t.kind, t.text, t.media, t.priority, t.status, t.created_at, t.due_at, t.accepted_at,
+                   f.full_name AS foreman_name
+            FROM tasks t
+            JOIN users f ON f.tg_id = t.foreman_id
+            WHERE t.status IN ('new', 'reported') AND f.role = 'foreman' AND f.status = 'active'
+            ORDER BY t.foreman_id, (t.status = 'reported'),
+                     CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.id
             """
         )
 

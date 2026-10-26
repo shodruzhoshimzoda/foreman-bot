@@ -224,7 +224,7 @@ async def _deliver(cb: CallbackQuery, state: FSMContext, db: Database, bot: Bot,
         async with sem:
             return await send_task(
                 bot, task["foreman_id"], task, foreman_header(task, new=True, tz=config.tz),
-                foreman_done_kb(task["id"]), kb_prompt="Когда выполните — нажмите:",
+                foreman_done_kb(task["id"]), kb_prompt="Примите задачу и отметьте, когда сделаете:",
             )
 
     results = await asyncio.gather(*(_send(t) for t in tasks))

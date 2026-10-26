@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -46,9 +47,35 @@ async def view_task(cb: CallbackQuery, db: Database, bot: Bot, config: Config):
         return await cb.answer(note, show_alert=True)
     await send_task(
         bot, cb.from_user.id, t, foreman_header(t, tz=config.tz),
-        foreman_done_kb(t["id"]), kb_prompt="Когда выполните — нажмите:",
+        foreman_done_kb(t["id"], accepted=bool(t["accepted_at"])), kb_prompt="Примите задачу и отметьте, когда сделаете:",
     )
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("fa:"))
+async def accept_task(cb: CallbackQuery, db: Database, bot: Bot):
+    """Прораб нажал «Принял»: шеф видит, что задачу заметили и взяли."""
+    t = await db.get_task(int(cb.data.split(":")[1]))
+    if not t or t["foreman_id"] != cb.from_user.id:
+        return await cb.answer("Задача не найдена", show_alert=True)
+    if not await db.accept(t["id"], cb.from_user.id):
+        # уже принята (двойной клик) или закрыта — просто приводим кнопки в порядок
+        try:
+            await cb.message.edit_reply_markup(
+                reply_markup=foreman_done_kb(t["id"], accepted=True) if t["status"] == "new" else None
+            )
+        except TelegramAPIError:
+            pass
+        return await cb.answer("Задача уже принята" if t["status"] == "new" else "Задача уже не в работе")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=foreman_done_kb(t["id"], accepted=True))
+    except TelegramAPIError:
+        pass
+    await cb.answer("Принято 👍")
+    await safe_send(
+        bot, t["chief_id"],
+        f"👍 <b>{esc(t['foreman_name'])}</b> принял(а) задачу <b>#{t['id']}</b>\n{PRIORITY_LABEL.get(t['priority'], t['priority'])}",
+    )
 
 
 @router.callback_query(F.data.startswith("fd:"))

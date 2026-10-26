@@ -57,6 +57,7 @@ def _task(t, media: MediaStore | None = None, full: bool = False) -> dict:
         "closed_at": t["closed_at"].isoformat() if t["closed_at"] else None,
         "due_at": t["due_at"].isoformat() if t["due_at"] else None,
         "reported_at": t["reported_at"].isoformat() if t["reported_at"] else None,
+        "accepted_at": t["accepted_at"].isoformat() if t["accepted_at"] else None,
         "media": None,
         "album": 0,
     }

@@ -4,6 +4,7 @@ import { useLayer } from '../backStack.js'
 import { KIND, PRIORITY, STATUS, fmtAge, fmtFull, fmtRel, fmtSpent } from '../format.js'
 import { kindTag } from '../media.js'
 import ActionButtons from './ActionButtons.jsx'
+import AcceptTag from './AcceptTag.jsx'
 import DueTag from './DueTag.jsx'
 import Avatar from './Avatar.jsx'
 import { PhotoGallery } from './Media.jsx'
@@ -61,6 +62,7 @@ export default function TaskPanel({ task: preview, tz, onClose, onForeman }) {
             <span className="tag"><i className="dot" style={{ background: pr.color }} />{pr.one}</span>
             <span className="tag">{kindTag(t)}</span>
             <DueTag t={t} tz={tz} />
+            <AcceptTag t={t} />
             {t.status === 'done' && t.closed_at && <span className="tag tag--ok">за {fmtSpent(t.created_at, t.closed_at)}</span>}
           </div>
 
@@ -100,6 +102,15 @@ export default function TaskPanel({ task: preview, tz, onClose, onForeman }) {
                   <span className="muted">{fmtFull(t.created_at, tz)}</span>
                 </div>
               </li>
+              {t.accepted_at && (
+                <li>
+                  <i className="timeline__dot" style={{ background: 'var(--c-active)' }} />
+                  <div>
+                    <b>👍 Прораб принял задачу</b>
+                    <span className="muted">{fmtFull(t.accepted_at, tz)} · через {fmtSpent(t.created_at, t.accepted_at)}</span>
+                  </div>
+                </li>
+              )}
               {t.reported_at && (
                 <li>
                   <i className="timeline__dot" style={{ background: 'var(--c-reported)' }} />

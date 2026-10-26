@@ -288,12 +288,26 @@ async def run(db: Database, dsn: str) -> None:
     session.calls.clear()
     await h.press(CHIEF, "nt_send")
     sent = [c for c in session.sent("SendMessage") if c.chat_id == F1][0]
-    assert "Срок: до" in sent.text and sent.reply_markup.inline_keyboard[0][0].text == "✅ Сделал"
+    assert "Срок: до" in sent.text
+    assert [b.text for b in sent.reply_markup.inline_keyboard[0]] == ["👍 Принял", "✅ Сделал"]
     tid = (await db.list_tasks(chief_id=CHIEF))[0]["id"]
 
     # чужой прораб не может отметить чужую задачу
     await h.press(F2, f"fd:{tid}")
     assert (await db.get_task(tid))["status"] == "new"
+
+    # «Принял»: чужой не может, свой — один раз; шеф получает уведомление, у прораба остаётся только «Сделал»
+    await h.press(F2, f"fa:{tid}")
+    assert (await db.get_task(tid))["accepted_at"] is None
+    session.calls.clear()
+    await h.press(F1, f"fa:{tid}")
+    assert (await db.get_task(tid))["accepted_at"] is not None
+    assert any(c.chat_id == CHIEF and "принял" in c.text for c in session.sent("SendMessage"))
+    markup = [c for c in session.calls if type(c).__name__ == "EditMessageReplyMarkup"]
+    assert markup and [b.callback_data for row in markup[-1].reply_markup.inline_keyboard for b in row] == [f"fd:{tid}"]
+    session.calls.clear()
+    await h.press(F1, f"fa:{tid}")                       # повторно — без второго уведомления
+    assert not [c for c in session.sent("SendMessage") if c.chat_id == CHIEF]
 
     session.calls.clear()
     await h.press(F1, f"fd:{tid}")

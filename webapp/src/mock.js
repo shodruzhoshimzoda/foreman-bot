@@ -55,6 +55,7 @@ function mkTask(id, k) {
     text: k === 5 ? LONG : kind === 'text' ? TEXTS[(k % 4) + (k % 4 === 2 ? 1 : 0)] : k % 3 === 0 && !album ? '' : TEXTS[k % 5],
     created_at: new Date(created).toISOString(),
     closed_at: status === 'new' || status === 'reported' ? null : new Date(created + (1 + (k % 7)) * 1.9e6).toISOString(),
+    accepted_at: status === 'new' && k % 3 === 0 ? null : new Date(created + 0.4 * 1.9e6).toISOString(),
     reported_at: status === 'reported' ? new Date(created + 2 * 1.9e6).toISOString() : null,
     due_at: new Date(created + DUE_H[PRIOS[k % 3]] * 3.6e6).toISOString(),
     media,

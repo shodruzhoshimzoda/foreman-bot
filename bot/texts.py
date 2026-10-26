@@ -103,6 +103,11 @@ def chief_header(t, tz: str) -> str:
     due = due_line(t, tz)
     if due:
         lines.append(due)
+    accepted = _field(t, "accepted_at")
+    if accepted:
+        lines.append(f"👍 Принял: {fmt_local(accepted, tz)}")
+    elif t["status"] == "new":
+        lines.append("👀 Ещё не принял")
     reported = _field(t, "reported_at")
     if t["status"] == "reported" and reported:
         lines.append(f"☑️ Прораб отметил: {fmt_local(reported, tz)}")
@@ -114,6 +119,43 @@ def chief_header(t, tz: str) -> str:
 def task_line(t, tz: str) -> str:
     """Короткая строка для истории задач."""
     return f"{STATUS_ICON.get(t['status'], '•')} #{t['id']} {esc(preview(t))} — {fmt_short_date(t['created_at'], tz)}"
+
+
+DIGEST_MAX_TASKS = 15  # строк с задачами в одной сводке прораба
+
+
+def foreman_digest(tasks: list, now_local: str, tz: str) -> str | None:
+    """Ежедневная сводка прорабу: что в работе, сроки, что ждёт одобрения. None — если показывать нечего."""
+    if not tasks:
+        return None
+    active = [t for t in tasks if t["status"] == "new"]
+    waiting = [t for t in tasks if t["status"] == "reported"]
+    now = utcnow()
+    late = sum(1 for t in active if t["due_at"] and t["due_at"] < now)
+    fresh = sum(1 for t in active if not t["accepted_at"])
+
+    lines = [f"☀️ <b>Ваши задачи на {now_local}</b>", ""]
+    head = f"🔧 В работе: {len(active)}"
+    if late:
+        head += f" · 🔥 просрочено: {late}"
+    lines.append(head)
+    if fresh:
+        lines.append(f"👀 Не принято: {fresh}")
+    if waiting:
+        lines.append(f"☑️ Ждут одобрения шефа: {len(waiting)}")
+    lines.append("")
+
+    for t in active[:DIGEST_MAX_TASKS]:
+        row = f"{PRIORITY_ICON.get(t['priority'], '•')} #{t['id']} {esc(preview(t, 40))}"
+        if t["due_at"]:
+            row += f" · до {fmt_short_date(t['due_at'], tz)} {fmt_local(t['due_at'], tz)[-5:]}" + (" 🔥" if t["due_at"] < now else "")
+        if not t["accepted_at"]:
+            row += " · 👀"
+        lines.append(row)
+    if len(active) > DIGEST_MAX_TASKS:
+        lines.append(f"…и ещё {len(active) - DIGEST_MAX_TASKS}")
+    lines.append("\nОткрыть задачу и отметить «Сделал»: «📋 Мои задачи».")
+    return "\n".join(lines)
 
 
 def _pct(num: float, den: float) -> str:
