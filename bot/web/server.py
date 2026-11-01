@@ -58,6 +58,7 @@ def _task(t, media: MediaStore | None = None, full: bool = False) -> dict:
         "due_at": t["due_at"].isoformat() if t["due_at"] else None,
         "reported_at": t["reported_at"].isoformat() if t["reported_at"] else None,
         "accepted_at": t["accepted_at"].isoformat() if t["accepted_at"] else None,
+        "report_photos": bool(t["has_report_photos"]),   # прораб прислал фото результата
         "media": None,
         "album": 0,
     }
@@ -71,6 +72,19 @@ def _task(t, media: MediaStore | None = None, full: bool = False) -> dict:
     elif media and t["kind"] in MEDIA_KINDS and t["file_id"]:
         out["media"] = {"url": media.url(t["id"]), "duration": t["duration"], "items": None}
     return out
+
+
+def _report(r, task_id: int, media: MediaStore | None) -> dict:
+    """Отчёт прораба: описание и фото. Ссылка подписана на задачу, к ней добавлен номер отчёта (&r=)."""
+    photos = [i for i in r["media"] if i["kind"] == "photo"]
+    gallery = None
+    if media and photos:
+        gallery = {
+            "url": f"{media.url(task_id)}&r={r['id']}",
+            "duration": None,
+            "items": [{"kind": "photo"} for _ in photos] if len(photos) > 1 else None,
+        }
+    return {"id": r["id"], "caption": r["caption"], "created_at": r["created_at"].isoformat(), "media": gallery}
 
 
 def _foreman(r) -> dict:
@@ -244,7 +258,10 @@ async def task_detail(request: web.Request) -> web.Response:
     task = await request.app[DB].get_task(task_id)
     if not task or task["chief_id"] != chief_id:
         raise web.HTTPNotFound(text="task not found")
-    resp = web.json_response({"task": _task(task, request.app.get(MEDIA), full=True)}, headers={"Cache-Control": "no-store"})
+    media = request.app.get(MEDIA)
+    out = _task(task, media, full=True)
+    out["reports"] = [_report(r, task_id, media) for r in await request.app[DB].reports_for_task(task_id)]
+    resp = web.json_response({"task": out}, headers={"Cache-Control": "no-store"})
     resp.enable_compression()
     return resp
 
@@ -295,6 +312,21 @@ def _media_item(t, index: int):
     return t["kind"], t["file_id"], t["thumb_id"]
 
 
+async def _report_item(request: web.Request, task_id: int, index: int):
+    """(вид, file_id, превью) фото №index из отчёта ?r=<id>; отчёт обязан принадлежать этой же задаче."""
+    try:
+        report = await request.app[DB].get_report(int(request.query["r"]))
+    except ValueError:
+        return None
+    if not report or report["task_id"] != task_id:
+        return None
+    photos = [i for i in report["media"] if i["kind"] == "photo"]
+    if not 0 <= index < len(photos):
+        return None
+    it = photos[index]
+    return "photo", it["file_id"], it.get("thumb_id")
+
+
 async def media_file(request: web.Request) -> web.StreamResponse:
     """Фото / голосовое задачи. Доступ — по подписанной ссылке из данных дашборда."""
     store = request.app.get(MEDIA)
@@ -313,6 +345,8 @@ async def media_file(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound()
     t = await request.app[DB].get_task(task_id)
     item = _media_item(t, index) if t else None
+    if t and request.query.get("r"):                      # фото из отчёта прораба
+        item = await _report_item(request, task_id, index)
     if item is None or item[0] not in MEDIA_KINDS:        # нет такого вложения, либо это видео
         raise web.HTTPNotFound()
     kind, full_id, thumb_id = item

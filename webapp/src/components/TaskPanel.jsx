@@ -92,6 +92,20 @@ export default function TaskPanel({ task: preview, tz, onClose, onForeman }) {
             </section>
           )}
 
+          {t.reports?.length > 0 && (
+            <section>
+              <h3>📸 Отчёт прораба</h3>
+              {t.reports.map((r) => (
+                <div className="report" key={r.id}>
+                  <span className="muted">{fmtFull(r.created_at, tz)}</span>
+                  {r.caption && <p className="panel__text">{r.caption}</p>}
+                  {r.media && <PhotoGallery media={r.media} alt={r.caption || 'Фото результата'} />}
+                  {!r.media && !r.caption && <p className="muted">Без фото и описания.</p>}
+                </div>
+              ))}
+            </section>
+          )}
+
           <section>
             <h3>Хронология</h3>
             <ol className="timeline">

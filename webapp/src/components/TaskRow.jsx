@@ -46,6 +46,7 @@ export default memo(function TaskRow({ t: raw, tz }) {
             <span className="tag">{kindTag(t)}</span>
             <DueTag t={t} tz={tz} />
             <AcceptTag t={t} />
+            {t.report_photos && <span className="tag tag--wait">📸 фото результата</span>}
             {t.status === 'done' && t.closed_at && <span className="tag tag--ok">за {fmtSpent(t.created_at, t.closed_at)}</span>}
           </div>
         </div>

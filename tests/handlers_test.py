@@ -309,33 +309,127 @@ async def run(db: Database, dsn: str) -> None:
     await h.press(F1, f"fa:{tid}")                       # повторно — без второго уведомления
     assert not [c for c in session.sent("SendMessage") if c.chat_id == CHIEF]
 
+    # ---------------- «Сделал» -> фото и описание -> отчёт шефу ----------------
+    def shots(tag):
+        return [PhotoSize(file_id=f"R{tag}_{i}", file_unique_id=f"ru{tag}{i}", width=100 * (i + 1), height=100 * (i + 1)) for i in range(4)]
+
+    def kb_of(call):
+        return [b for row in call.reply_markup.inline_keyboard for b in row]
+
+    # «Сделал» ничего не меняет, пока отчёт не отправлен; только просит фото
     session.calls.clear()
     await h.press(F1, f"fd:{tid}")
-    assert (await db.get_task(tid))["status"] == "reported"
-    to_chief = [c for c in session.sent("SendMessage") if c.chat_id == CHIEF]
-    assert to_chief and "отметил" in to_chief[0].text
-    assert [b.callback_data for row in to_chief[0].reply_markup.inline_keyboard for b in row] == [
-        f"ct_done:{tid}", f"ct_reopen:{tid}", f"ct_fail:{tid}"]
-    await h.press(F1, f"fd:{tid}")                      # повторное нажатие ничего не ломает
-    assert (await db.get_task(tid))["status"] == "reported"
-    assert tid not in [t["id"] for t in await db.list_tasks(foreman_id=F1)]   # из списка прораба ушла
+    assert (await db.get_task(tid))["status"] == "new"
+    prompt = session.sent("SendMessage")[-1]
+    assert prompt.chat_id == F1 and "Отчёт по задаче" in prompt.text
+    assert [b.text for b in kb_of(prompt)] == ["⏭ Без фото", "✖️ Отмена"]
+    assert not [c for c in session.sent("SendMessage") if c.chat_id == CHIEF]    # шефу пока тишина
 
-    # у шефа задача в «Активных» с пометкой ☑️; открывается с кнопками «Одобрить / Вернуть»
+    # отмена: задача осталась в работе
+    await h.press(F1, "fr_cancel")
+    assert (await db.get_task(tid))["status"] == "new"
+    await h.press(F1, "fr_send")                                     # после отмены кнопка устарела — ничего не отправляется
+    assert (await db.get_task(tid))["status"] == "new"
+
+    # заново: фото с подписью + второе фото + описание текстом + постороннее содержимое
+    await h.press(F1, f"fd:{tid}")
+    await h.send(F1, photo=shots(1), caption="Мусор вывезен")
+    await h.send(F1, photo=shots(2), media_group_id="rg1")
+    await h.say(F1, "Всё чисто, контейнер пустой")                   # описание заменяет подпись
+    await h.send(F1, voice=Voice(file_id="V1", file_unique_id="vu1", duration=3))
+    assert any("Пришлите фото" in c.text for c in session.sent("SendMessage")[-1:])
+    last_edit = session.sent("EditMessageText")[-1]
+    assert "Фото: 2" in last_edit.text and "Описание: есть" in last_edit.text and "контейнер пустой" in last_edit.text
+    assert kb_of(last_edit)[0].text == "📤 Отправить шефу (2 фото)"
+    assert (await db.get_task(tid))["status"] == "new"
+
+    # чужой прораб не может отправить чужой отчёт
+    await h.press(F2, "fr_send")
+    assert (await db.get_task(tid))["status"] == "new"
+
+    # отправка: статус «ждёт одобрения», шефу — альбом с подписью и кнопки одобрения
+    session.calls.clear()
+    await h.press(F1, "fr_send")
+    assert (await db.get_task(tid))["status"] == "reported"
+    album = [c for c in session.sent("SendMediaGroup") if c.chat_id == CHIEF]
+    assert len(album) == 1 and len(album[0].media) == 2
+    cap = album[0].media[0].caption
+    assert "выполнил" in cap and f"#{tid}" in cap and "контейнер пустой" in cap and "Иванов" in cap
+    ask = [c for c in session.sent("SendMessage") if c.chat_id == CHIEF][-1]
+    assert [b.callback_data for b in kb_of(ask)] == [f"ct_done:{tid}", f"ct_reopen:{tid}", f"ct_fail:{tid}"]
+    rep = (await db.reports_for_task(tid))[0]
+    assert rep["caption"] == "Всё чисто, контейнер пустой" and [m["file_id"] for m in rep["media"]] == ["R1_3", "R2_3"]
+    assert rep["media"][0]["thumb_id"] == "R1_2" and all("mid" not in m for m in rep["media"])
+    assert (await db.get_task(tid))["has_report_photos"] is True
+    assert tid not in [t["id"] for t in await db.list_tasks(foreman_id=F1)]   # из списка прораба ушла
+    session.calls.clear()
+    await h.press(F1, f"fd:{tid}")                                   # повторно «Сделал» — отказ, новой формы отчёта нет
+    assert not [c for c in session.sent("SendMessage") if c.chat_id == F1]
+    assert session.sent("AnswerCallbackQuery")[-1].show_alert
+
+    # у шефа задача в «Активных» с ☑️; при открытии — кнопки и тот же отчёт ещё раз (без кнопок)
     session.calls.clear()
     await h.say(CHIEF, "📋 Активные задачи")
-    lst = session.sent("SendMessage")[-1]
-    assert any("☑️" in b.text for row in lst.reply_markup.inline_keyboard for b in row)
+    assert any("☑️" in b.text for b in kb_of(session.sent("SendMessage")[-1]))
     session.calls.clear()
     await h.press(CHIEF, f"ct_view:{tid}")
-    assert any(b.callback_data == f"ct_reopen:{tid}" for c in session.sent("SendMessage") if c.reply_markup
-               for row in c.reply_markup.inline_keyboard for b in row)
+    assert any(b.callback_data == f"ct_reopen:{tid}" for c in session.sent("SendMessage") if c.reply_markup for b in kb_of(c))
+    again = session.sent("SendMediaGroup")
+    assert len(again) == 1 and "Отчёт прораба" in again[0].media[0].caption
 
-    # шеф возвращает в работу -> прораб видит снова, шеф потом одобряет
+    # шеф возвращает в работу -> прораб снова видит задачу
     session.calls.clear()
     await h.press(CHIEF, f"ct_reopen:{tid}")
     assert (await db.get_task(tid))["status"] == "new"
     assert any(c.chat_id == F1 and "вернул" in c.text for c in session.sent("SendMessage"))
+
+    # одно фото с подписью: уходит одним сообщением (фото + подпись + кнопки)
     await h.press(F1, f"fd:{tid}")
+    await h.send(F1, photo=shots(3), caption="Второй заход")
+    session.calls.clear()
+    await h.press(F1, "fr_send")
+    photo = [c for c in session.sent("SendPhoto") if c.chat_id == CHIEF]
+    assert len(photo) == 1 and "Второй заход" in photo[0].caption and kb_of(photo[0])[0].callback_data == f"ct_done:{tid}"
+    assert len(await db.reports_for_task(tid)) == 2
+    await h.press(CHIEF, f"ct_reopen:{tid}")
+
+    # без фото и без описания: шефу просто текст, отчёта в базе нет
+    await h.press(F1, f"fd:{tid}")
+    session.calls.clear()
+    await h.press(F1, "fr_send")
+    texts = [c for c in session.sent("SendMessage") if c.chat_id == CHIEF]
+    assert texts and "выполнил" in texts[0].text and kb_of(texts[0])[0].callback_data == f"ct_done:{tid}"
+    assert len(await db.reports_for_task(tid)) == 2 and (await db.get_task(tid))["status"] == "reported"
+    await h.press(CHIEF, f"ct_reopen:{tid}")
+
+    # меню и /cancel посреди отчёта сбрасывают его; потом «отправить» уже не работает
+    await h.press(F1, f"fd:{tid}")
+    await h.send(F1, photo=shots(4))
+    await h.say(F1, "📋 Мои задачи")
+    await h.press(F1, "fr_send")
+    assert (await db.get_task(tid))["status"] == "new"
+    await h.press(F1, f"fd:{tid}")
+    await h.say(F1, "/cancel")
+    await h.press(F1, "fr_send")
+    assert (await db.get_task(tid))["status"] == "new"
+
+    # шеф закрыл задачу, пока прораб снимал фото: отчёт не отправляется, шефу ничего не приходит
+    await h.press(F1, f"fd:{tid}")
+    await h.send(F1, photo=shots(5))
+    await db.transition(tid, "cancelled")
+    session.calls.clear()
+    await h.press(F1, "fr_send")
+    assert not [c for c in session.sent("SendMessage") + session.sent("SendPhoto") if c.chat_id == CHIEF]
+    assert (await db.get_task(tid))["status"] == "cancelled" and len(await db.reports_for_task(tid)) == 2
+    await db.reopen(tid)
+
+    # не больше 10 фото в отчёте
+    await h.press(F1, f"fd:{tid}")
+    for n in range(12):
+        await h.send(F1, photo=shots(100 + n))
+    session.calls.clear()
+    await h.press(F1, "fr_send")
+    assert len((await db.reports_for_task(tid))[-1]["media"]) == 10
     await h.press(CHIEF, f"ct_done:{tid}")
     done = await db.get_task(tid)
     assert done["status"] == "done" and done["closed_at"]

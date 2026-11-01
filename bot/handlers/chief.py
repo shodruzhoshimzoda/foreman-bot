@@ -32,7 +32,7 @@ from bot.keyboards import (
     task_list_kb,
     team_kb,
 )
-from bot.notify import drop_keyboard, safe_edit, safe_send, send_task
+from bot.notify import drop_keyboard, safe_edit, safe_send, send_report, send_task
 from bot.states import NewTask
 from bot.texts import (
     album_summary,
@@ -288,6 +288,11 @@ async def cb_view(cb: CallbackQuery, db: Database, bot: Bot, config: Config):
     await send_task(
         bot, cb.from_user.id, t, chief_header(t, config.tz), chief_actions_kb(t["id"], reported=t["status"] == "reported")
     )
+    if t["status"] == "reported":  # то, что прораб прислал как результат, — следом, без кнопок
+        reports = await db.reports_for_task(t["id"])
+        if reports:
+            last = reports[-1]
+            await send_report(bot, cb.from_user.id, t, last, f"📸 <b>Отчёт прораба</b> · {fmt_local(last['created_at'], config.tz)}")
     await cb.answer()
 
 

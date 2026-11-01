@@ -59,6 +59,23 @@ async def send_task(
         return False
 
 
+async def send_report(bot: Bot, chat_id: int, t, report, header: str, kb: InlineKeyboardMarkup | None = None) -> bool:
+    """Отчёт прораба: его фото (одно или альбомом) с описанием. Без фото — просто текст.
+
+    `report` — строка task_reports или None (прораб нажал «Сделал» без фото и описания).
+    """
+    photos = [i for i in (report["media"] if report else []) if i["kind"] == "photo"]
+    caption = (report["caption"] if report else "") or ""
+    shown = {
+        "id": t["id"],
+        "kind": "photo" if photos else "text",
+        "file_id": photos[0]["file_id"] if photos else None,
+        "text": f"📝 {caption}" if caption else "",
+        "media": photos if len(photos) > 1 else None,
+    }
+    return await send_task(bot, chat_id, shown, header, kb, kb_prompt="Одобрить результат?")
+
+
 async def _send_album(
     bot: Bot, chat_id: int, t, items: list, header: str, kb: InlineKeyboardMarkup | None, kb_prompt: str
 ) -> bool:

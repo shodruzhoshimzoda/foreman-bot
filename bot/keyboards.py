@@ -90,6 +90,15 @@ def chief_actions_kb(task_id: int, reported: bool = False) -> InlineKeyboardMark
     return _kb(b)
 
 
+def report_kb(photos: int) -> InlineKeyboardMarkup:
+    """Под отчётом прораба: отправить (с фото или без) / отменить."""
+    b = InlineKeyboardBuilder()
+    b.button(text=f"📤 Отправить шефу ({photos} фото)" if photos else "⏭ Без фото", callback_data="fr_send")
+    b.button(text="✖️ Отмена", callback_data="fr_cancel")
+    b.adjust(1, 1)
+    return _kb(b)
+
+
 def foreman_done_kb(task_id: int, accepted: bool = False) -> InlineKeyboardMarkup:
     """Под задачей у прораба: «Принял» (пока не принял) и «Сделал»."""
     b = InlineKeyboardBuilder()

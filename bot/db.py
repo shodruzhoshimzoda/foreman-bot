@@ -70,6 +70,17 @@ BEGIN
     END IF;
 END $$;
 
+-- отчёты прораба о выполнении: фото (до 10) и описание; у задачи их может быть несколько (после возврата в работу)
+CREATE TABLE IF NOT EXISTS task_reports (
+    id          BIGSERIAL PRIMARY KEY,
+    task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    foreman_id  BIGINT NOT NULL,
+    caption     TEXT NOT NULL DEFAULT '',
+    media       JSONB NOT NULL DEFAULT '[]'::jsonb,   -- [{"kind": "photo", "file_id": ..., "thumb_id": ...}]
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reports_task ON task_reports (task_id, id);
+
 -- выборки по периоду (статистика, экспорт, дашборд)
 CREATE INDEX IF NOT EXISTS idx_tasks_chief_created   ON tasks (chief_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_foreman_created ON tasks (foreman_id, created_at DESC);
@@ -87,7 +98,8 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 _TASK_SELECT = """
-SELECT t.*, f.full_name AS foreman_name
+SELECT t.*, f.full_name AS foreman_name,
+       EXISTS (SELECT 1 FROM task_reports r WHERE r.task_id = t.id AND jsonb_array_length(r.media) > 0) AS has_report_photos
 FROM tasks t
 JOIN users f ON f.tg_id = t.foreman_id
 """
@@ -367,6 +379,37 @@ class Database:
             task_id, foreman_id,
         )
         return row is not None
+
+    async def submit_report(self, task_id: int, foreman_id: int, caption: str, media: list) -> tuple[bool, int | None]:
+        """Прораб закончил: задача -> «ждёт одобрения» и (если есть фото или описание) сохраняется отчёт.
+
+        Всё в одной транзакции. Возвращает (успех, id отчёта или None). Успех False — задачи нет, она не его
+        или уже не «в работе» (например, шеф её закрыл, пока прораб снимал фото).
+        """
+        async with self.pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE tasks SET status='reported', reported_at=now(), accepted_at=COALESCE(accepted_at, now())
+                WHERE id=$1 AND foreman_id=$2 AND status='new' RETURNING id
+                """,
+                task_id, foreman_id,
+            )
+            if row is None:
+                return False, None
+            if not media and not caption:
+                return True, None
+            rep = await conn.fetchval(
+                "INSERT INTO task_reports (task_id, foreman_id, caption, media) VALUES ($1, $2, $3, $4) RETURNING id",
+                task_id, foreman_id, caption, media,
+            )
+            return True, rep
+
+    async def reports_for_task(self, task_id: int):
+        """Отчёты по задаче от старых к новым."""
+        return await self._all("SELECT * FROM task_reports WHERE task_id=$1 ORDER BY id", task_id)
+
+    async def get_report(self, report_id: int):
+        return await self._one("SELECT * FROM task_reports WHERE id=$1", report_id)
 
     async def report_done(self, task_id: int, foreman_id: int) -> bool:
         """Прораб нажал «Сделал»: задача ждёт одобрения шефа. False — задачи нет, она не его или уже не «в работе»."""

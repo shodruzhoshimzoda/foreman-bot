@@ -50,8 +50,20 @@ function mkTask(id, k) {
     const srcs = kinds.map((_, j) => photo(k * 10 + j))
     media = { url: srcs[0], srcs, duration: null, items: kinds.map((x) => ({ kind: x })) }
   }
+  // отчёт прораба с фото (у «ждёт одобрения» и у части выполненных)
+  const reports = []
+  if (status === 'reported' || (status === 'done' && k % 2 === 0)) {
+    const n = 1 + (k % 3)
+    const srcs = Array.from({ length: n }, (_, j) => photo(k * 7 + j + 3))
+    reports.push({
+      id: id * 10, created_at: new Date(created + 2 * 1.9e6).toISOString(),
+      caption: k % 2 ? 'Залили, всё по плану. Бетон принят, накладная на фото.' : '',
+      media: { url: srcs[0], srcs, duration: null, items: n > 1 ? srcs.map(() => ({ kind: 'photo' })) : null },
+    })
+  }
   return {
     id, foreman_id: (k % 5) + 1, foreman: f, kind, priority: PRIOS[k % 3], status, album,
+    reports, report_photos: reports.length > 0,
     text: k === 5 ? LONG : kind === 'text' ? TEXTS[(k % 4) + (k % 4 === 2 ? 1 : 0)] : k % 3 === 0 && !album ? '' : TEXTS[k % 5],
     created_at: new Date(created).toISOString(),
     closed_at: status === 'new' || status === 'reported' ? null : new Date(created + (1 + (k % 7)) * 1.9e6).toISOString(),

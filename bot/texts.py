@@ -94,6 +94,15 @@ def foreman_header(t, new: bool = False, tz: str | None = None) -> str:
     return f"{head}\n{due}" if due else head
 
 
+def report_header(t) -> str:
+    """Шапка отчёта прораба для шефа: кто, какая задача, какая важность."""
+    return (
+        f"☑️ <b>{esc(t['foreman_name'])}</b> выполнил(а) задачу <b>#{t['id']}</b>\n"
+        f"{PRIORITY_LABEL.get(t['priority'], t['priority'])}\n"
+        f"Задача: {esc(preview(t, 60))}"
+    )
+
+
 def chief_header(t, tz: str) -> str:
     lines = [
         f"<b>Задача #{t['id']}</b> · 👷 {esc(t['foreman_name'])}",
